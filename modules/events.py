@@ -8,7 +8,7 @@ import pandas as pd
 from .utils import ROOT
 
 
-IMPORTANT_EVENTS = {"CPI", "Core CPI", "PCE", "Nonfarm", "FOMC", "Powell Speech"}
+IMPORTANT_EVENTS = {"CPI", "Core CPI", "PPI", "NFP", "Nonfarm", "FOMC", "Powell Speech", "Core PCE", "PCE"}
 
 
 def load_events(path: str = "events.csv") -> pd.DataFrame:

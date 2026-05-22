@@ -1,0 +1,6 @@
+{
+  "auto_refresh_enabled": true,
+  "refresh_interval_minutes": 5,
+  "telegram_enabled": false,
+  "auto_trade_enabled": false
+}

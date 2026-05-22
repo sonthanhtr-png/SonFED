@@ -1,14 +1,37 @@
 {
-  "time": "",
+  "time": "2026-05-22 14:42:35",
   "symbol": "XAUUSD",
-  "action": "WAIT",
-  "mode": "Manual",
-  "confidence": 0,
+  "action": "SELL",
+  "mode": "Tự động",
+  "confidence": 72,
+  "winrate": 75,
   "risk_level": "Trung bình",
-  "entry_zone": "Chờ",
-  "take_profit": null,
-  "stop_loss": null,
-  "strategy": "Chờ tín hiệu",
-  "reason": "Chưa có dữ liệu phân tích.",
-  "allow_auto_trade": false
+  "entry_zone": "4567.55-4572.40",
+  "take_profit": 4458.6,
+  "stop_loss": 4582.09,
+  "strategy": "SELL theo xu hướng",
+  "reason": "Không nên SELL đuổi sát BB dưới. Chờ hồi hoặc reject.",
+  "allow_auto_trade": false,
+  "conflict": false,
+  "mtf_summary": "Các khung thời gian đang lệch pha, nên chờ xác nhận rõ hơn.",
+  "market_regime": "Weak Trend",
+  "market_regime_score": 55,
+  "volatility": "Sideway yếu",
+  "volatility_score": 0,
+  "risk_check": {
+    "allow_auto_trade": false,
+    "reasons": [
+      "Tín hiệu không cho phép tự động giao dịch."
+    ],
+    "checked_at": "2026-05-22 14:42:35"
+  },
+  "ai_decision": {
+    "action": "SELL",
+    "winrate": 75,
+    "tp": 4458.6,
+    "sl": 4582.09,
+    "rr": 1.14,
+    "reason": "Regime: Weak Trend. Volatility: Sideway yếu (0/100). LL/LH nghiêng giảm. Momentum trung tính. Ưu tiên SELL khi reject vùng 4572.40. Nếu break xác nhận trên 4572.40 thì hủy bias SELL.",
+    "risk_level": "Trung bình"
+  }
 }

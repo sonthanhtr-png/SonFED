@@ -19,8 +19,12 @@
     "enabled": false,
     "cycle_minutes": 30
   },
+  "auto_refresh": {
+    "enabled": true,
+    "interval_minutes": 5
+  },
   "trade": {
-    "mode": "Manual",
+    "mode": "Tự động",
     "symbol": "XAUUSD",
     "allow_auto_trade": false,
     "min_confidence": 70,
@@ -57,5 +61,24 @@
     "fallback_shared_dir": "shared",
     "database": "data\\sonfed.db",
     "events": "events.csv"
+  },
+  "trade_policy": {
+    "symbol": "XAUUSD",
+    "allow_buy": true,
+    "allow_sell": true,
+    "max_buy_orders": 3,
+    "max_sell_orders": 3,
+    "min_confidence": 70,
+    "min_rr": 1.2,
+    "max_spread": 35,
+    "filter_high_volatility": true,
+    "filter_important_news": true,
+    "allow_sonexec_read_signal": false,
+    "allow_auto_execution": false,
+    "allow_auto_adjustment": false,
+    "default_lot": 0.03,
+    "max_buy_volume": 0.09,
+    "max_sell_volume": 0.09,
+    "position_management_strategy": "AI thích nghi"
   }
 }

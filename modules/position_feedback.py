@@ -75,6 +75,6 @@ def position_table_rows(feedback: dict[str, Any], adjustments: list[dict[str, An
             "Trailing": "Bật" if pos.get("trailing_enabled") else "Tắt",
             "Đánh giá SonFED": adj.get("reason", "Chưa có đánh giá riêng cho lệnh này."),
             "Đề xuất": adj.get("action", "HOLD_POSITION"),
-            "Độ tin cậy": adj.get("confidence", 0),
+            "Độ tin cậy": adj.get("ai_confidence", adj.get("confidence", 0)),
         })
     return rows

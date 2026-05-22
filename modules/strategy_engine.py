@@ -23,18 +23,25 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
     enabled = config.get("features", {}).get("strategies", {})
     pressure = macro.get("score", 50)
     regime = gold_analysis.get("regime", "Chưa rõ xu hướng")
+    market_regime = gold_analysis.get("market_regime", {})
+    volatility = gold_analysis.get("volatility", {})
+    volatility_score = int(volatility.get("score", 0) or 0)
+    high_vol_penalty = 8 if volatility_score >= 70 else 4 if volatility_score >= 45 else 0
     rows = []
 
     def add(name, condition, probability, entry, tp, sl, alert):
         if enabled.get(name, True):
+            adjusted_probability = max(10, int(probability) - high_vol_penalty)
             rows.append({
                 "strategy": name,
                 "condition": condition,
-                "probability": int(probability),
+                "probability": adjusted_probability,
                 "entry": entry,
                 "take_profit": round(float(tp), 2),
                 "stop_loss": round(float(sl), 2),
                 "alert": alert,
+                "volatility": volatility.get("level", "Chưa rõ"),
+                "risk_level": "Cao" if volatility_score >= 70 else "Trung bình",
             })
 
     add(
@@ -49,7 +56,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
     add(
         "SELL theo xu hướng",
         "EMA50 dưới EMA200, giá dưới MA20, ADX trên 25 và nhịp hồi bị từ chối.",
-        72 if "giảm" in regime.lower() and pressure >= 60 else 52,
+        72 if market_regime.get("bias") == "SELL" and pressure >= 55 else 52,
         f"{resistance - atr * 0.3:.2f}-{resistance:.2f}",
         support,
         resistance + atr * 0.6,
@@ -58,7 +65,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
     add(
         "Breakout",
         "Đóng nến trên kháng cự, volume tăng và giữ được phía trên.",
-        68 if bool(last.get("BOS_UP", False)) else 48,
+        72 if bool(last.get("BOS_UP", False)) and volatility_score >= 35 else 48,
         f"Trên {resistance:.2f}",
         resistance + atr * 1.5,
         resistance - atr * 0.7,
@@ -103,7 +110,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
     add(
         "Tiếp diễn giảm",
         "Giá phá hỗ trợ, volume tăng và vĩ mô gây áp lực cho vàng.",
-        70 if bool(last.get("BOS_DOWN", False)) and pressure >= 60 else 50,
+        72 if bool(last.get("BOS_DOWN", False)) and pressure >= 55 and volatility_score >= 35 else 50,
         f"Dưới {support:.2f}",
         support - atr * 1.3,
         support + atr * 0.7,

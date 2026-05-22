@@ -8,9 +8,17 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     out = df.copy()
-    close = out["Close"]
-    high = out["High"]
-    low = out["Low"]
+    if "Close" not in out:
+        out["Close"] = 0.0
+    if "High" not in out:
+        out["High"] = out["Close"]
+    if "Low" not in out:
+        out["Low"] = out["Close"]
+    if "Open" not in out:
+        out["Open"] = out["Close"]
+    close = pd.to_numeric(out["Close"], errors="coerce").ffill().fillna(0.0)
+    high = pd.to_numeric(out["High"], errors="coerce").fillna(close)
+    low = pd.to_numeric(out["Low"], errors="coerce").fillna(close)
 
     out["MA20"] = close.rolling(20).mean()
     out["EMA50"] = close.ewm(span=50, adjust=False).mean()
@@ -20,7 +28,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["BB_MID"] = out["MA20"]
     out["BB_UPPER"] = out["MA20"] + 2 * std
     out["BB_LOWER"] = out["MA20"] - 2 * std
-    out["BB_WIDTH"] = (out["BB_UPPER"] - out["BB_LOWER"]) / out["BB_MID"]
+    out["BB_WIDTH"] = ((out["BB_UPPER"] - out["BB_LOWER"]) / out["BB_MID"].replace(0, np.nan) * 100).fillna(0.0)
 
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
@@ -37,6 +45,14 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     prev_close = close.shift(1)
     tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
     out["ATR14"] = tr.rolling(14).mean()
+    out["ATR_PCT"] = (out["ATR14"] / close.replace(0, np.nan) * 100).fillna(0.0)
+    out["CANDLE_RANGE"] = high - low
+    out["CANDLE_RANGE_PCT"] = (out["CANDLE_RANGE"] / close.replace(0, np.nan) * 100).fillna(0.0)
+    bb_rising = out["BB_WIDTH"].diff().rolling(3).sum().fillna(0.0) > 0
+    atr_rising = out["ATR14"].diff().rolling(3).sum().fillna(0.0) > 0
+    out["BB_EXPANDING"] = ((out["BB_WIDTH"] > out["BB_WIDTH"].rolling(20).mean() * 1.1) | bb_rising).fillna(False)
+    out["ATR_EXPANDING"] = ((out["ATR14"] > out["ATR14"].rolling(20).mean() * 1.1) | atr_rising).fillna(False)
+    out["CANDLE_EXPANSION"] = (out["CANDLE_RANGE"] > out["CANDLE_RANGE"].rolling(20).mean() * 1.5).fillna(False)
 
     up_move = high.diff()
     down_move = -low.diff()

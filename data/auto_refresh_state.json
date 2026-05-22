@@ -1,0 +1,28 @@
+{
+  "last_update_time": "2026-05-22T16:02:55",
+  "next_update_time": "2026-05-22T16:07:55",
+  "previous_action": "WAIT",
+  "current_action": "WAIT",
+  "last_signal_key": "WAIT|SELL theo xu hướng|72|4568.12-4572.40|Trung bình",
+  "last_changes": [],
+  "last_snapshot": {
+    "time": "2026-05-22 16:02:55",
+    "gold_price": 4523.5,
+    "dxy": 99.26599884033203,
+    "us10y": 4.585999965667725,
+    "vix": 16.790000915527344,
+    "oil": 98.56999969482422,
+    "nasdaq": 714.4400024414062,
+    "sp500": 742.75,
+    "pressure_index": 70,
+    "action": "WAIT",
+    "strategy": "SELL theo xu hướng",
+    "confidence": 72,
+    "summary": "Cập nhật lúc: 16:02\n\nGiá vàng hiện tại: 4523.5\nSonFED Pressure Index: 70/100\nTrạng thái thị trường: Weak Trend\nVolatility: Sideway yếu\nXu hướng M15: Weak Trend\nXu hướng H1: Weak Trend\nDXY: 99.26599884033203\nUS10Y: 4.585999965667725\n\nKết luận:\nGiá hiện tại 4523.50. Trạng thái thị trường: Weak Trend. Volatility: Sideway yếu (10/100). Bias hiện tại: SELL. Xác suất: 75%. Risk level: Trung bình.\nVàng đang chịu hai lực kéo ngược nhau.\n\nChiến lược hiện tại:\nWAIT - SELL theo xu hướng - winrate 75%.\n\nLưu ý:\nTỷ lệ RR chưa đạt yêu cầu.",
+    "regime": "Weak Trend",
+    "m15_trend": "Weak Trend",
+    "h1_trend": "Weak Trend",
+    "support": 4463.60009765625,
+    "resistance": 4572.39990234375
+  }
+}

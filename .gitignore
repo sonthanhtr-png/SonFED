@@ -1,0 +1,51 @@
+# ==========================================
+# RUNTIME — không commit lên GitHub
+# ==========================================
+
+# Thư mục giao tiếp nội bộ (chứa dữ liệu thay đổi liên tục)
+shared/
+
+# Database và nhật ký
+data/sonfed.db
+data/signal.json
+logs/
+
+# Biến môi trường (chứa token, API key — TUYỆT ĐỐI không commit)
+.env
+
+# ==========================================
+# PYTHON
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ==========================================
+# VIRTUAL ENVIRONMENT
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+
+# ==========================================
+# IDE
+# ==========================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ==========================================
+# HỆ ĐIỀU HÀNH
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
