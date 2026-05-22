@@ -8,7 +8,8 @@ def assess_auto_trade(signal: dict, config: dict, event_risk: dict, trade_status
     reasons = []
     allowed = True
 
-    if signal.get("confidence", 0) < trade_cfg.get("min_confidence", 70):
+    min_confidence = min(trade_cfg.get("min_confidence", 70), 50) if signal.get("scalp_accepted") else trade_cfg.get("min_confidence", 70)
+    if signal.get("confidence", 0) < min_confidence:
         allowed = False
         reasons.append("Độ tin cậy dưới ngưỡng cho phép.")
     if not signal.get("allow_auto_trade", False):

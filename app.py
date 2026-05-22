@@ -17,6 +17,15 @@ from core.trade_policy import (
     save_policy_to_config,
     write_signal_if_allowed,
 )
+from core.settings_engine import (
+    AI_MODES,
+    get_default_settings as get_default_sonfed_settings,
+    get_ai_mode_settings,
+    get_effective_advanced_settings,
+    load_sonfed_settings as load_persistent_sonfed_settings,
+    save_sonfed_settings as save_persistent_sonfed_settings,
+    validate_settings as validate_persistent_sonfed_settings,
+)
 from core.trade_management_engine import build_position_adjustment_payload, normalize_adjustment_action
 from modules.auto_refresh_engine import (
     INTERVAL_OPTIONS,
@@ -107,15 +116,6 @@ ACTION_LABELS = {
     "DISABLE_NEW_ENTRY": "Không mở thêm lệnh mới",
 }
 
-POLICY_PRESETS = {
-    "Người mới": {"min_confidence": 75, "min_rr": 1.5, "filter_high_volatility": True, "allow_auto_execution": False},
-    "An toàn": {"min_confidence": 80, "min_rr": 2.0, "filter_high_volatility": True, "allow_auto_execution": False},
-    "Cân bằng": {"min_confidence": 70, "min_rr": 1.2, "filter_high_volatility": True},
-    "Scalping": {"min_confidence": 55, "min_rr": 1.0, "filter_high_volatility": True},
-    "Aggressive": {"min_confidence": 45, "min_rr": 1.0, "filter_high_volatility": False},
-}
-
-
 def vi_regime(value: str | None) -> str:
     raw = str(value or "Chưa rõ")
     return REGIME_LABELS.get(raw, raw)
@@ -124,14 +124,6 @@ def vi_regime(value: str | None) -> str:
 def vi_action(value: str | None) -> str:
     raw = str(value or "WAIT").upper()
     return ACTION_LABELS.get(raw, raw)
-
-
-def apply_policy_preset(policy: AITradePolicy, preset: str) -> AITradePolicy:
-    for key, value in POLICY_PRESETS.get(preset, {}).items():
-        setattr(policy, key, value)
-    policy.max_buy_volume = round(policy.max_buy_orders * policy.default_lot, 2)
-    policy.max_sell_volume = round(policy.max_sell_orders * policy.default_lot, 2)
-    return policy
 
 
 def render_confidence_guide() -> None:
@@ -221,107 +213,276 @@ def get_ai_trade_policy(config: dict) -> AITradePolicy:
     return policy_from_config(config)
 
 
+MAIN_SONFED_SETTING_KEYS = (
+    "default_lot",
+    "max_buy_orders",
+    "max_sell_orders",
+    "ai_mode",
+    "allow_sonexec_signal_read",
+    "enable_auto_execution",
+    "enable_position_management",
+)
+ADVANCED_SETTING_KEYS = (
+    "min_ai_confidence",
+    "min_rr",
+    "max_spread",
+    "avoid_high_volatility",
+    "avoid_news",
+    "position_strategy",
+)
+POSITION_STRATEGY_OPTIONS = ["Bảo toàn vốn", "Dời SL về hòa vốn", "Bám xu hướng", "AI tự thích nghi"]
+AI_MODE_DESCRIPTIONS = {
+    "An toàn": "Ít lệnh hơn, ưu tiên bảo toàn vốn.",
+    "Cân bằng": "Phù hợp sử dụng hằng ngày, cân bằng giữa cơ hội và rủi ro.",
+    "Chủ động": "Nhiều tín hiệu hơn, chấp nhận biến động cao hơn.",
+    "Tấn công": "Rủi ro cao, chỉ dùng khi đã hiểu hệ thống.",
+}
+DISPLAY_TO_ENGINE_STRATEGY = {
+    "Dời SL về hòa vốn": "Break-even",
+    "AI tự thích nghi": "AI thích nghi",
+}
+ENGINE_TO_DISPLAY_STRATEGY = {
+    "Break-even": "Dời SL về hòa vốn",
+    "AI thích nghi": "AI tự thích nghi",
+}
+
+
+def collect_advanced_settings_from_state() -> dict:
+    preset = get_ai_mode_settings(st.session_state.get("ai_mode", get_default_sonfed_settings()["ai_mode"]))
+    return {
+        "min_ai_confidence": st.session_state.get("min_ai_confidence", preset["min_ai_confidence"]),
+        "min_rr": st.session_state.get("min_rr", preset["min_rr"]),
+        "max_spread": st.session_state.get("max_spread", preset["max_spread"]),
+        "avoid_high_volatility": st.session_state.get("avoid_high_volatility", preset["avoid_high_volatility"]),
+        "avoid_news": st.session_state.get("avoid_news", preset["avoid_news"]),
+        "position_strategy": st.session_state.get("position_strategy", preset["position_strategy"]),
+    }
+
+
+def sync_advanced_settings_state(settings: dict) -> None:
+    for key in ADVANCED_SETTING_KEYS:
+        st.session_state[key] = settings[key]
+
+
+def initialize_sonfed_settings_state(settings: dict) -> None:
+    clean = validate_persistent_sonfed_settings(settings)
+    for key in MAIN_SONFED_SETTING_KEYS:
+        value = clean[key]
+        if key not in st.session_state:
+            st.session_state[key] = value
+    if "advanced_settings" not in st.session_state:
+        st.session_state["advanced_settings"] = clean.get("advanced_settings")
+
+    effective_advanced = get_effective_advanced_settings(clean)
+    for key, value in effective_advanced.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def sync_ai_mode_preset_to_advanced_state() -> None:
+    if st.session_state.get("advanced_settings") is None:
+        sync_advanced_settings_state(get_ai_mode_settings(st.session_state.get("ai_mode", "Cân bằng")))
+
+
+def mark_advanced_settings_manual() -> None:
+    st.session_state["advanced_settings"] = collect_advanced_settings_from_state()
+
+
+def collect_sonfed_settings_from_state() -> dict:
+    defaults = get_default_sonfed_settings()
+    settings = {key: st.session_state.get(key, defaults[key]) for key in MAIN_SONFED_SETTING_KEYS}
+    settings["advanced_settings"] = None
+    if st.session_state.get("advanced_settings") is not None:
+        settings["advanced_settings"] = collect_advanced_settings_from_state()
+    return settings
+
+
+def sync_sonfed_settings_state(settings: dict) -> None:
+    clean = validate_persistent_sonfed_settings(settings)
+    for key in MAIN_SONFED_SETTING_KEYS:
+        st.session_state[key] = clean[key]
+    st.session_state["advanced_settings"] = clean.get("advanced_settings")
+    sync_advanced_settings_state(get_effective_advanced_settings(clean))
+
+
+def apply_sonfed_settings_to_policy(policy: AITradePolicy, settings: dict) -> AITradePolicy:
+    clean = validate_persistent_sonfed_settings(settings)
+    advanced = get_effective_advanced_settings(clean)
+    policy.default_lot = float(clean["default_lot"])
+    policy.allow_buy = True
+    policy.allow_sell = True
+    policy.max_buy_orders = int(clean["max_buy_orders"])
+    policy.max_sell_orders = int(clean["max_sell_orders"])
+    policy.max_buy_volume = round(policy.default_lot * policy.max_buy_orders, 2)
+    policy.max_sell_volume = round(policy.default_lot * policy.max_sell_orders, 2)
+    policy.min_confidence = int(advanced["min_ai_confidence"])
+    policy.min_rr = float(advanced["min_rr"])
+    policy.max_spread = int(advanced["max_spread"])
+    policy.filter_high_volatility = bool(advanced["avoid_high_volatility"])
+    policy.filter_important_news = bool(advanced["avoid_news"])
+    policy.allow_sonexec_read_signal = bool(clean["allow_sonexec_signal_read"])
+    policy.allow_auto_execution = bool(clean["enable_auto_execution"])
+    policy.allow_auto_adjustment = bool(clean["enable_position_management"])
+    policy.position_management_strategy = DISPLAY_TO_ENGINE_STRATEGY.get(
+        advanced["position_strategy"],
+        advanced["position_strategy"],
+    )
+    return policy
+
+
+def persist_policy_settings_snapshot(settings: dict) -> None:
+    config = load_config()
+    policy = apply_sonfed_settings_to_policy(get_ai_trade_policy(config), settings)
+    save_policy_to_config(config, policy)
+    save_config(config)
+
+
+def save_sonfed_settings_from_state() -> None:
+    try:
+        saved_settings = save_persistent_sonfed_settings(collect_sonfed_settings_from_state())
+        sync_sonfed_settings_state(saved_settings)
+        persist_policy_settings_snapshot(saved_settings)
+        st.session_state["_sonfed_settings_message"] = "Đã lưu cấu hình SonFED"
+        st.session_state.pop("_sonfed_settings_error", None)
+    except Exception as exc:
+        st.session_state["_sonfed_settings_error"] = f"Không thể lưu cấu hình: {exc}"
+        st.session_state.pop("_sonfed_settings_message", None)
+
+
+def restore_default_sonfed_settings() -> None:
+    try:
+        defaults = get_default_sonfed_settings()
+        saved_settings = save_persistent_sonfed_settings(defaults)
+        sync_sonfed_settings_state(saved_settings)
+        persist_policy_settings_snapshot(saved_settings)
+        st.session_state["_sonfed_settings_message"] = "Đã khôi phục mặc định"
+        st.session_state.pop("_sonfed_settings_error", None)
+    except Exception as exc:
+        st.session_state["_sonfed_settings_error"] = f"Không thể lưu cấu hình: {exc}"
+        st.session_state.pop("_sonfed_settings_message", None)
+
+
 def render_ai_trade_policy(config: dict, mode_config: dict) -> AITradePolicy:
     st.sidebar.expander("Hệ thống hoạt động thế nào?").write(
         "SonFED là bộ não phân tích thị trường và tạo tín hiệu. SonEXEC là bộ máy thực thi, "
         "vào lệnh và quản lý lệnh đang mở. Người mới nên để Auto Trade tắt cho đến khi hiểu rõ rủi ro."
     )
-    policy = get_ai_trade_policy(config)
+    settings = load_persistent_sonfed_settings()
+    initialize_sonfed_settings_state(settings)
+    policy = apply_sonfed_settings_to_policy(get_ai_trade_policy(config), collect_sonfed_settings_from_state())
     with st.sidebar.expander("Chính sách giao dịch AI"):
-        preset = st.selectbox("Cấu hình nhanh", ["Tùy chỉnh", *POLICY_PRESETS.keys()])
-        if preset != "Tùy chỉnh" and st.button("Áp dụng cấu hình này", use_container_width=True):
-            policy = apply_policy_preset(policy, preset)
-            st.success(f"Đã áp dụng preset {preset}.")
-        policy.symbol = st.text_input("Mã giao dịch trên MT5", value=policy.symbol or "XAUUSD", help="Ví dụ XAUUSD là vàng giao ngay. SonFED sẽ gửi tín hiệu cho đúng mã này.")
-        policy.allow_buy = st.toggle("Cho phép tín hiệu BUY", value=policy.allow_buy, help="Nếu tắt, AI có nghiêng mua cũng sẽ chuyển thành WAIT.")
-        policy.allow_sell = st.toggle("Cho phép tín hiệu SELL", value=policy.allow_sell, help="Nếu tắt, AI có nghiêng bán cũng sẽ chuyển thành WAIT.")
-        policy.max_buy_orders = st.number_input("Số lệnh BUY tối đa", 0, 20, int(policy.max_buy_orders), help="Giới hạn số lệnh mua để tránh mở quá nhiều lệnh cùng chiều.")
-        policy.max_sell_orders = st.number_input("Số lệnh SELL tối đa", 0, 20, int(policy.max_sell_orders), help="Giới hạn số lệnh bán để tránh dồn quá nhiều rủi ro một phía.")
-        policy.default_lot = st.number_input(
-            "Khối lượng mặc định mỗi lệnh",
-            0.01,
-            10.0,
-            float(policy.default_lot),
+        st.number_input(
+            "Khối lượng cơ bản mỗi lệnh",
+            min_value=0.01,
+            max_value=10.0,
             step=0.01,
+            key="default_lot",
             help="Ví dụ 0.03 nghĩa là mỗi lệnh SonEXEC mở sẽ dùng 0.03 lot nếu Auto Trade được bật. Người mới nên dùng lot nhỏ.",
         )
-        policy.max_buy_volume = st.number_input("Tổng khối lượng BUY tối đa", 0.0, 100.0, float(policy.max_buy_volume), step=0.01, help="Ví dụ mỗi lệnh 0.03 và tối đa 3 lệnh BUY thì tổng BUY có thể lên 0.09 lot.")
-        policy.max_sell_volume = st.number_input("Tổng khối lượng SELL tối đa", 0.0, 100.0, float(policy.max_sell_volume), step=0.01, help="Ví dụ mỗi lệnh 0.03 và tối đa 3 lệnh SELL thì tổng SELL có thể lên 0.09 lot.")
-        policy.min_confidence = st.slider(
-            "Độ tin cậy AI tối thiểu",
-            1,
-            100,
-            int(policy.min_confidence),
-            format="%d%%",
-            help="AI chỉ vào lệnh khi đủ tự tin. 70-80% phù hợp người mới; 50% nhiều lệnh hơn nhưng dễ nhiễu; 85% rất an toàn nhưng ít cơ hội.",
+        st.number_input(
+            "Số lệnh BUY tối đa",
+            min_value=0,
+            max_value=20,
+            step=1,
+            key="max_buy_orders",
+            help="Giới hạn số lệnh mua để tránh mở quá nhiều lệnh cùng chiều.",
         )
-        policy.min_rr = st.number_input(
-            "Tỷ lệ lời/lỗ tối thiểu (RR)",
-            0.1,
-            10.0,
-            float(policy.min_rr),
-            step=0.1,
-            help="RR là tỷ lệ lời/lỗ kỳ vọng. Nếu có thể lỗ 100 USD nhưng lời 200 USD thì RR = 2.0. RR thấp nghĩa là lợi nhuận không đáng so với rủi ro.",
+        st.number_input(
+            "Số lệnh SELL tối đa",
+            min_value=0,
+            max_value=20,
+            step=1,
+            key="max_sell_orders",
+            help="Giới hạn số lệnh bán để tránh dồn quá nhiều rủi ro một phía.",
         )
-        policy.max_spread = st.number_input(
-            "Spread tối đa cho phép",
-            1,
-            5000,
-            int(policy.max_spread),
-            help="Spread là chênh lệch giá mua và bán. Spread cao thường xảy ra gần tin tức, khi biến động mạnh hoặc thanh khoản thấp; AI sẽ tránh vào lệnh.",
+        ai_mode = st.selectbox(
+            "Chế độ AI",
+            AI_MODES,
+            key="ai_mode",
+            on_change=sync_ai_mode_preset_to_advanced_state,
+            help="Người dùng chọn mức độ rủi ro. AI tự xử lý chi tiết.",
         )
-        policy.filter_high_volatility = st.toggle(
-            "Tránh thị trường biến động quá mạnh",
-            value=policy.filter_high_volatility,
-            help="Khi bật, AI tránh giao dịch lúc nến quá lớn, Bollinger Bands mở rộng mạnh hoặc ATR tăng mạnh để giảm nguy cơ quét stop loss.",
-        )
-        policy.filter_important_news = st.toggle(
-            "Tránh giao dịch gần tin tức mạnh",
-            value=policy.filter_important_news,
-            help="Khi bật, AI tránh giao dịch gần CPI, NFP, FOMC hoặc các tin có thể làm giá chạy rất mạnh.",
-        )
-        policy.allow_sonexec_read_signal = st.toggle(
+        st.caption(AI_MODE_DESCRIPTIONS.get(ai_mode, "AI tự chọn chính sách phù hợp."))
+        st.toggle(
             "Cho phép SonEXEC đọc tín hiệu",
-            value=policy.allow_sonexec_read_signal and mode_config["write_signal"],
+            key="allow_sonexec_signal_read",
             disabled=not mode_config["write_signal"],
             help="Khi bật, SonFED sẽ gửi BUY/SELL/WAIT sang SonEXEC qua signal.json.",
         )
-        policy.allow_auto_execution = st.toggle(
+        st.toggle(
             "Tự động vào lệnh bằng SonEXEC",
-            value=policy.allow_auto_execution and mode_config["allow_auto_trade_toggle"],
+            key="enable_auto_execution",
             disabled=not mode_config["allow_auto_trade_toggle"],
             help="Khi bật, SonEXEC có thể tự vào lệnh bằng tiền thật nếu tín hiệu và kiểm tra rủi ro đều đạt.",
         )
-        if policy.allow_auto_execution:
+        if st.session_state.get("enable_auto_execution"):
             st.error("Chỉ bật tự động vào lệnh khi đã hiểu rõ hệ thống và rủi ro.")
-        policy.allow_auto_adjustment = st.toggle(
+        st.toggle(
             "Tự động quản lý lệnh đang mở",
-            value=policy.allow_auto_adjustment and mode_config["write_signal"],
+            key="enable_position_management",
             disabled=not mode_config["write_signal"],
             help="Tính năng này không mở lệnh mới. SonEXEC có thể dời stop loss, khóa lợi nhuận, trailing stop hoặc chốt lời một phần cho lệnh đang mở.",
         )
-        policy.position_management_strategy = st.selectbox(
-            "Chiến lược quản lý lệnh",
-            ["Bảo toàn vốn", "Dời SL về hòa vốn", "Bám xu hướng", "AI tự thích nghi"],
-            index={"Bảo toàn vốn": 0, "Break-even": 1, "Bám xu hướng": 2, "AI thích nghi": 3}.get(policy.position_management_strategy, 3),
-            help="SonFED chỉ chọn hướng quản lý cấp cao. SonEXEC sẽ xử lý chi tiết: dời SL theo giá, dời SL về hòa vốn, chốt lời một phần.",
-        )
-        display_to_engine = {"Dời SL về hòa vốn": "Break-even", "AI tự thích nghi": "AI thích nghi"}
-        policy.position_management_strategy = display_to_engine.get(policy.position_management_strategy, policy.position_management_strategy)
-        st.warning(f"Nếu mỗi lệnh {policy.default_lot:.2f} lot và cho phép tối đa {policy.max_sell_orders} lệnh SELL, tổng rủi ro SELL có thể lên đến {policy.max_sell_volume:.2f} lot.")
-        with st.expander("Giải thích các cài đặt quan trọng"):
-            st.write("Độ tin cậy AI tối thiểu: AI chỉ phát tín hiệu khi đủ tự tin. Người mới nên dùng 70-80%.")
-            st.write("Tỷ lệ lời/lỗ tối thiểu: nếu RR thấp, lợi nhuận kỳ vọng không đáng so với rủi ro.")
-            st.write("Spread tối đa: spread cao làm lệnh vừa vào đã bất lợi, thường xuất hiện gần tin hoặc khi market chạy mạnh.")
-            st.write("Tránh biến động mạnh: giúp hạn chế vào lệnh lúc nến quá lớn, BB mở rộng hoặc ATR tăng mạnh.")
-            st.write("Cho SonEXEC đọc tín hiệu: SonFED sẽ ghi signal.json để SonEXEC biết BUY/SELL/WAIT.")
-            st.write("Tự động vào lệnh: SonEXEC có thể vào lệnh bằng tiền thật. Chỉ bật khi đã hiểu rủi ro.")
-            st.write("Tự động quản lý lệnh: không mở lệnh mới, chỉ dời SL, khóa lợi nhuận, trailing stop hoặc chốt lời một phần.")
-        st.caption("Khuyến nghị người mới: preset Người mới hoặc An toàn, Auto Trade tắt, bật bộ lọc biến động mạnh và tin tức.")
-        if st.button("Lưu chính sách giao dịch AI", use_container_width=True):
-            save_policy_to_config(config, policy)
-            save_config(config)
-            st.success("Đã lưu Chính sách giao dịch AI.")
+
+        lot = float(st.session_state.get("default_lot", 0.03))
+        max_sell_orders = int(st.session_state.get("max_sell_orders", 3))
+        st.info(f"Nếu mỗi lệnh {lot:.2f} lot và tối đa {max_sell_orders} lệnh SELL, tổng SELL tối đa là {lot * max_sell_orders:.2f} lot.")
+
+        with st.expander("Cài đặt nâng cao"):
+            st.slider(
+                "Độ tin cậy AI tối thiểu",
+                1,
+                100,
+                format="%d%%",
+                key="min_ai_confidence",
+                on_change=mark_advanced_settings_manual,
+                help="AI chỉ vào lệnh khi đủ tự tin.",
+            )
+            st.number_input(
+                "Tỷ lệ RR tối thiểu",
+                min_value=0.1,
+                max_value=10.0,
+                step=0.1,
+                key="min_rr",
+                on_change=mark_advanced_settings_manual,
+                help="RR là tỷ lệ lợi nhuận/rủi ro tối thiểu.",
+            )
+            st.number_input(
+                "Spread tối đa",
+                min_value=1,
+                max_value=5000,
+                key="max_spread",
+                on_change=mark_advanced_settings_manual,
+                help="Spread cao làm lệnh vừa vào đã bất lợi.",
+            )
+            st.toggle(
+                "Tránh thị trường biến động mạnh",
+                key="avoid_high_volatility",
+                on_change=mark_advanced_settings_manual,
+            )
+            st.toggle(
+                "Tránh giao dịch gần tin tức mạnh",
+                key="avoid_news",
+                on_change=mark_advanced_settings_manual,
+            )
+            st.selectbox(
+                "Chiến lược quản lý lệnh",
+                POSITION_STRATEGY_OPTIONS,
+                key="position_strategy",
+                on_change=mark_advanced_settings_manual,
+                help="Nếu không chỉnh thủ công, AI tự chọn theo Chế độ AI.",
+            )
+        if st.session_state.get("advanced_settings") is not None:
+            st.warning("Bạn đang dùng cấu hình nâng cao thủ công.")
+        st.caption("Cấu hình được lưu cục bộ trên máy.")
+        action_cols = st.columns(2)
+        action_cols[0].button("Lưu cấu hình", use_container_width=True, on_click=save_sonfed_settings_from_state)
+        action_cols[1].button("Khôi phục mặc định", use_container_width=True, on_click=restore_default_sonfed_settings)
+        if st.session_state.get("_sonfed_settings_message"):
+            st.success(st.session_state.pop("_sonfed_settings_message"))
+        if st.session_state.get("_sonfed_settings_error"):
+            st.error(st.session_state.pop("_sonfed_settings_error"))
+        policy = apply_sonfed_settings_to_policy(policy, collect_sonfed_settings_from_state())
     if not mode_config["write_signal"]:
         policy.allow_sonexec_read_signal = False
         policy.allow_auto_adjustment = False
@@ -389,6 +550,284 @@ def render_position_management_panel(trade_feedback: dict, adjustments_payload: 
 
     st.subheader("AI phân tích lệnh đang mở")
     st.write(adjustments_payload.get("ai_position_analysis", "Chưa có phân tích vị thế."))
+
+
+def render_ai_decision_box(signal: dict, ai_decision: dict) -> None:
+    st.subheader("AI Decision Box")
+    d1, d2, d3, d4, d5 = st.columns(5)
+    d1.metric("Quyết định AI", vi_action(signal.get("decision", signal.get("action", "WAIT"))))
+    d2.metric("Xác suất", f"{ai_decision.get('winrate', signal.get('confidence', 0))}%")
+    d3.metric("Chốt lời dự kiến", ai_decision.get("tp") if ai_decision.get("tp") is not None else "N/A")
+    d4.metric("Cắt lỗ dự kiến", ai_decision.get("sl") if ai_decision.get("sl") is not None else "N/A")
+    d5.metric("Tỷ lệ lời/lỗ", ai_decision.get("rr") if ai_decision.get("rr") is not None else "N/A")
+
+
+def compact_reason(text: str, limit: int = 150) -> str:
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 3].rstrip() + "..."
+
+
+def build_compact_ai_status(signal: dict, ai_decision: dict, gold_analysis: dict, adjustments_payload: dict, policy_result: dict) -> str:
+    adjustments = adjustments_payload.get("adjustments", [])
+    active_adjustments = [
+        item for item in adjustments
+        if normalize_adjustment_action(item.get("action", "")) not in {"HOLD_POSITION", "DISABLE_NEW_ENTRY"}
+    ]
+    if active_adjustments:
+        item = active_adjustments[0]
+        return f"AI ưu tiên {vi_action(normalize_adjustment_action(item.get('action', ''))).lower()} theo volatility hiện tại."
+
+    action = signal.get("action", ai_decision.get("action", "WAIT"))
+    volatility_score = int(signal.get("volatility_score", gold_analysis.get("volatility", {}).get("score", 0)) or 0)
+    if policy_result.get("blocked"):
+        return "AI chưa mở vị thế mới vì " + compact_reason(policy_result.get("message", "risk chưa đạt điều kiện vận hành."))
+    if action == "WAIT" and volatility_score >= 70:
+        return "AI đang đánh giá thị trường biến động mạnh và chưa đủ xác nhận để mở vị thế mới."
+    if action == "WAIT":
+        return "AI đang đứng ngoài, chờ xác nhận rõ hơn trước khi mở vị thế mới."
+    return f"AI ưu tiên {action} với xác suất {ai_decision.get('winrate', signal.get('confidence', 0))}% và RR {ai_decision.get('rr', 'N/A')}."
+
+
+def build_critical_alerts(signal: dict, policy_result: dict, erisk: dict, risk_fb: dict, mtf: dict) -> list[str]:
+    alerts: list[str] = []
+    if policy_result.get("blocked"):
+        alerts.append(compact_reason(policy_result.get("message", ""), 180))
+    if risk_fb.get("connected") and not risk_fb.get("allow", True):
+        alerts.append("SonEXEC đang khóa risk: " + compact_reason(risk_fb.get("reason", ""), 140))
+    if erisk.get("blocked"):
+        alerts.append(compact_reason(erisk.get("message", "Sắp có tin mạnh."), 160))
+
+    risk_level = str(signal.get("risk_level", "")).lower()
+    volatility_score = int(signal.get("volatility_score", 0) or 0)
+    if "cao" in risk_level:
+        alerts.append("Risk đang ở mức cao.")
+    if volatility_score >= 70:
+        alerts.append(f"Volatility bất thường: {volatility_score}/100.")
+
+    spread = risk_fb.get("spread_points")
+    max_spread = signal.get("policy", {}).get("max_spread")
+    if spread is not None and max_spread is not None and float(spread) > float(max_spread):
+        alerts.append(f"Spread bất thường: {float(spread):.0f} điểm.")
+
+    mtf_summary = str(mtf.get("summary", "")).lower()
+    if any(token in mtf_summary for token in ("lệch", "ngược", "conflict", "không đồng thuận")):
+        alerts.append("Đa khung thời gian chưa đồng thuận.")
+    return [item for item in dict.fromkeys(alerts) if item][:5]
+
+
+def render_critical_alerts(signal: dict, policy_result: dict, erisk: dict, risk_fb: dict, mtf: dict) -> None:
+    alerts = build_critical_alerts(signal, policy_result, erisk, risk_fb, mtf)
+    if not alerts:
+        st.success("Không có cảnh báo nghiêm trọng.")
+        return
+    for item in alerts:
+        st.warning(item)
+
+
+def render_auto_refresh_compact(refresh_info: dict) -> None:
+    st.subheader("Auto refresh")
+    summary = dashboard_summary(refresh_info)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Trạng thái", summary["enabled"])
+    c2.metric("Chu kỳ", summary["interval"])
+    c3.metric("Tín hiệu hiện tại", summary["current_action"])
+    c4.metric("Tín hiệu trước", summary["previous_action"])
+    st.caption(f"Cập nhật cuối: {summary['last_update']} | Tiếp theo: {summary['next_update']}")
+
+
+def render_sonexec_status_compact(trade_feedback: dict, risk_fb: dict) -> None:
+    st.subheader("SonEXEC status")
+    if trade_feedback.get("connected"):
+        st.success(compact_reason(trade_feedback.get("message", "Đã nhận trạng thái từ SonEXEC."), 140))
+    else:
+        st.warning(compact_reason(trade_feedback.get("message", "Chưa nhận trạng thái từ SonEXEC."), 140))
+
+    account = trade_feedback.get("account", {})
+    if account:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Balance", f"{account.get('balance', 0):,.2f}")
+        c2.metric("Equity", f"{account.get('equity', 0):,.2f}")
+        c3.metric("Drawdown", f"{account.get('drawdown_percent', 0):.2f}%")
+
+    if risk_fb.get("connected"):
+        if risk_fb.get("allow"):
+            st.success("Risk OK: " + compact_reason(risk_fb.get("reason", ""), 120))
+        else:
+            st.error("Risk khóa: " + compact_reason(risk_fb.get("reason", ""), 120))
+
+
+def render_position_management_compact(trade_feedback: dict, adjustments_payload: dict, signal: dict, gold_analysis: dict) -> None:
+    positions = trade_feedback.get("positions", [])
+    buy_volume = sum(float(p.get("lot", p.get("volume", 0)) or 0) for p in positions if "BUY" in str(p.get("type", p.get("type_name", ""))).upper())
+    sell_volume = sum(float(p.get("lot", p.get("volume", 0)) or 0) for p in positions if "SELL" in str(p.get("type", p.get("type_name", ""))).upper())
+    floating_profit = sum(float(p.get("profit", 0) or 0) for p in positions)
+
+    st.subheader("Trạng thái quản lý lệnh")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Lệnh mở", len(positions))
+    c2.metric("BUY lot", f"{buy_volume:.2f}")
+    c3.metric("SELL lot", f"{sell_volume:.2f}")
+    c4.metric("P/L", f"{floating_profit:,.2f}")
+
+    c5, c6, c7 = st.columns(3)
+    c5.metric("Risk", signal.get("risk_level", "N/A"))
+    c6.metric("Market", vi_regime(gold_analysis.get("regime", "Chưa rõ")))
+    c7.metric("Confidence", f"{signal.get('confidence', 0)}%")
+
+    adjustments = adjustments_payload.get("adjustments", [])
+    if not adjustments:
+        st.info("Chưa có điều chỉnh lệnh mới.")
+        return
+    rows = []
+    for item in adjustments:
+        rows.append(
+            {
+                "Lệnh": item.get("ticket", "N/A"),
+                "Hành động": vi_action(normalize_adjustment_action(item.get("action", ""))),
+                "Độ tin cậy": item.get("ai_confidence", item.get("confidence", 0)),
+                "Lý do": compact_reason(item.get("reason", ""), 120),
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def render_guided_mode_ui(
+    config: dict,
+    refresh_info: dict,
+    signal: dict,
+    ai_decision: dict,
+    gold_analysis: dict,
+    macro: dict,
+    mtf: dict,
+    changes: list[str],
+    policy: AITradePolicy,
+    policy_result: dict,
+    bundle: dict,
+    gold_df: pd.DataFrame,
+    bias: str,
+    erisk: dict,
+    risk_fb: dict,
+    trade_feedback: dict,
+    adjustments_payload: dict,
+) -> None:
+    render_status_strip(config, refresh_info, signal)
+    render_user_guide_mode(config)
+    st.plotly_chart(make_gold_chart(gold_df), use_container_width=True, key="overview_guided_gold_chart")
+    st.subheader("Kết luận nhanh")
+    st.write(gold_analysis["summary"])
+    render_ai_decision_box(signal, ai_decision)
+    render_policy_status(policy)
+    render_policy_warning(policy_result)
+    render_quick_decision_explanation(signal, ai_decision, gold_analysis, macro, mtf)
+    st.write(ai_decision["reason"])
+    st.subheader("Phân tích AI")
+    st.write(gold_analysis.get("ai_analysis", "Chưa có phân tích AI."))
+    st.write(bias)
+    st.info(mtf["summary"])
+    st.subheader("Cảnh báo risk")
+    for alert in smart_alerts(gold_analysis, macro, mtf, erisk):
+        st.warning(alert)
+    render_auto_refresh_compact(refresh_info)
+
+
+def render_semi_auto_mode_ui(
+    config: dict,
+    refresh_info: dict,
+    signal: dict,
+    ai_decision: dict,
+    gold_analysis: dict,
+    macro: dict,
+    mtf: dict,
+    changes: list[str],
+    policy: AITradePolicy,
+    policy_result: dict,
+    bundle: dict,
+    gold_df: pd.DataFrame,
+    bias: str,
+    erisk: dict,
+    risk_fb: dict,
+    trade_feedback: dict,
+    adjustments_payload: dict,
+) -> None:
+    render_status_strip(config, refresh_info, signal)
+    st.warning("Bán tự động: AI đưa tín hiệu, người dùng xác nhận thủ công.")
+    render_ai_decision_box(signal, ai_decision)
+    st.info(build_compact_ai_status(signal, ai_decision, gold_analysis, adjustments_payload, policy_result))
+    render_policy_status(policy)
+    render_critical_alerts(signal, policy_result, erisk, risk_fb, mtf)
+    st.subheader("Lý do AI quyết định")
+    st.write(compact_reason(ai_decision.get("reason", signal.get("reason", "")), 420))
+    st.plotly_chart(make_gold_chart(gold_df), use_container_width=True, key="overview_semi_gold_chart")
+    render_auto_refresh_compact(refresh_info)
+
+
+def render_auto_mode_ui(
+    config: dict,
+    refresh_info: dict,
+    signal: dict,
+    ai_decision: dict,
+    gold_analysis: dict,
+    macro: dict,
+    mtf: dict,
+    changes: list[str],
+    policy: AITradePolicy,
+    policy_result: dict,
+    bundle: dict,
+    gold_df: pd.DataFrame,
+    bias: str,
+    erisk: dict,
+    risk_fb: dict,
+    trade_feedback: dict,
+    adjustments_payload: dict,
+) -> None:
+    render_status_strip(config, refresh_info, signal)
+    render_ai_decision_box(signal, ai_decision)
+    st.subheader("Trạng thái AI")
+    st.info(build_compact_ai_status(signal, ai_decision, gold_analysis, adjustments_payload, policy_result))
+    st.subheader("Risk quan trọng")
+    render_critical_alerts(signal, policy_result, erisk, risk_fb, mtf)
+    render_auto_refresh_compact(refresh_info)
+    render_sonexec_status_compact(trade_feedback, risk_fb)
+    render_position_management_compact(trade_feedback, adjustments_payload, signal, gold_analysis)
+    if changes:
+        st.subheader("Tín hiệu mới")
+        for item in changes[:4]:
+            st.warning(compact_reason(item, 150))
+
+
+def render_ai_assistant_mode_ui(
+    config: dict,
+    refresh_info: dict,
+    signal: dict,
+    ai_decision: dict,
+    gold_analysis: dict,
+    macro: dict,
+    mtf: dict,
+    changes: list[str],
+    policy: AITradePolicy,
+    policy_result: dict,
+    bundle: dict,
+    gold_df: pd.DataFrame,
+    bias: str,
+    erisk: dict,
+    risk_fb: dict,
+    trade_feedback: dict,
+    adjustments_payload: dict,
+) -> None:
+    render_ai_decision_box(signal, ai_decision)
+    st.info(build_compact_ai_status(signal, ai_decision, gold_analysis, adjustments_payload, policy_result))
+    st.subheader("Cảnh báo quan trọng")
+    render_critical_alerts(signal, policy_result, erisk, risk_fb, mtf)
+    st.subheader("Điều chỉnh lệnh")
+    render_position_management_compact(trade_feedback, adjustments_payload, signal, gold_analysis)
+    st.subheader("Tín hiệu mới")
+    if changes:
+        for item in changes[:3]:
+            st.warning(compact_reason(item, 150))
+    else:
+        st.success("Chưa có tín hiệu mới cần chú ý.")
 
 
 def render_dashboard_explanation() -> None:
@@ -577,92 +1016,6 @@ def render_status_strip(config: dict, refresh_info: dict, signal: dict) -> None:
     st.caption(f"Lần cập nhật tiếp theo: {fmt_time(refresh_info.get('state', {}).get('next_update_time'))}")
 
 
-def render_guide_mode(config: dict) -> None:
-    render_user_guide_mode(config)
-
-
-def render_semi_auto_mode(signal: dict, ai_decision: dict) -> None:
-    st.warning("Chế độ bán tự động: tín hiệu chỉ là đề xuất, cần người dùng xác nhận thủ công.")
-    cols = st.columns(6)
-    cols[0].metric("Tín hiệu", signal.get("action", "WAIT"))
-    cols[1].metric("Winrate", f"{ai_decision.get('winrate', signal.get('winrate', 0))}%")
-    cols[2].metric("Độ tin cậy AI", f"{signal.get('confidence', 0)}%")
-    cols[3].metric("Mức rủi ro", signal.get("risk_level", "N/A"))
-    cols[4].metric("TP", ai_decision.get("tp") or "N/A")
-    cols[5].metric("SL", ai_decision.get("sl") or "N/A")
-    st.metric("RR", ai_decision.get("rr") if ai_decision.get("rr") is not None else "N/A")
-    st.write(ai_decision.get("reason", signal.get("reason", "")))
-    if st.button("Phân tích lại ngay", key="semi_auto_refresh"):
-        st.cache_data.clear()
-        st.rerun()
-
-
-def render_auto_mode(config: dict, refresh_info: dict, signal: dict, changes: list[str]) -> None:
-    st.success("Chế độ tự động: SonFED tự cập nhật theo chu kỳ, ghi signal.json và ghi nhật ký khi tín hiệu thay đổi.")
-    st.write(f"Chu kỳ auto refresh: {refresh_info.get('interval_minutes', 5)} phút.")
-    st.write("SonEXEC được phép đọc signal.json khi Auto Trade bật và risk check cho phép.")
-    if config.get("trade", {}).get("allow_auto_trade"):
-        st.info("Auto Trade đang bật. Signal chỉ có hiệu lực khi risk check đạt.")
-    else:
-        st.warning("Auto Trade đang tắt. SonFED vẫn phân tích và ghi signal, nhưng không cho phép vào lệnh tự động.")
-    if changes:
-        st.write("Thay đổi quan trọng:")
-        for item in changes:
-            st.write("- " + item)
-
-
-def render_ai_assist_mode(gold_analysis: dict, macro: dict, mtf: dict, signal: dict, ai_decision: dict) -> None:
-    st.info("Chế độ AI hỗ trợ: SonFED đưa ra phân tích và kịch bản, không tự động gửi lệnh nếu Auto Trade chưa bật.")
-    regime = gold_analysis.get("market_regime", {})
-    levels = gold_analysis.get("levels", {})
-    bias = ai_decision.get("action", "WAIT")
-    resistance = levels.get("resistance")
-    support = levels.get("support")
-    cancel_condition = "Chờ thêm dữ liệu."
-    if bias == "SELL" and resistance:
-        cancel_condition = f"Hủy kịch bản SELL nếu giá break xác nhận trên {resistance:.2f}."
-    elif bias == "BUY" and support:
-        cancel_condition = f"Hủy kịch bản BUY nếu giá breakdown dưới {support:.2f}."
-    elif support and resistance:
-        cancel_condition = f"Hủy mọi kịch bản sớm nếu giá phá vỡ vùng {support:.2f} - {resistance:.2f} mà không có retest rõ."
-
-    st.write("Nhận định vĩ mô:")
-    st.write(macro.get("interpretation", "Chưa có nhận định vĩ mô."))
-    st.write("Nhận định kỹ thuật:")
-    st.write(gold_analysis.get("ai_analysis", "Chưa có nhận định kỹ thuật."))
-    st.write(f"Trạng thái thị trường: {vi_regime(regime.get('label', gold_analysis.get('regime', 'Chưa rõ')))}.")
-    st.write(f"Định hướng AI: {vi_action(bias)}.")
-    st.write("Lý do:")
-    st.write(ai_decision.get("reason", signal.get("reason", "")))
-    st.write("Điều kiện hủy kịch bản:")
-    st.write(cancel_condition)
-    st.write("Gợi ý quản trị rủi ro:")
-    st.write("Giảm khối lượng khi volatility cao, luôn dùng SL, không auto trade nếu risk level là Cao.")
-
-
-def render_trading_mode_panel(
-    config: dict,
-    refresh_info: dict,
-    signal: dict,
-    ai_decision: dict,
-    gold_analysis: dict,
-    macro: dict,
-    mtf: dict,
-    changes: list[str],
-) -> None:
-    st.subheader("Trạng thái vận hành")
-    render_status_strip(config, refresh_info, signal)
-    mode = normalize_trading_mode(config.get("trade", {}).get("mode", "Hướng dẫn sử dụng"))
-    if mode == "Hướng dẫn sử dụng":
-        render_guide_mode(config)
-    elif mode == "Bán tự động":
-        render_semi_auto_mode(signal, ai_decision)
-    elif mode == "Tự động":
-        render_auto_mode(config, refresh_info, signal, changes)
-    elif mode == "AI hỗ trợ":
-        render_ai_assist_mode(gold_analysis, macro, mtf, signal, ai_decision)
-
-
 def render_auto_refresh_controls(config: dict, mode_config: dict) -> dict:
     st.sidebar.divider()
     st.sidebar.subheader("Tự động cập nhật")
@@ -725,11 +1078,15 @@ def render_auto_refresh_controls(config: dict, mode_config: dict) -> dict:
 def sidebar(config: dict) -> tuple[dict, str, str, bool]:
     st.sidebar.title("SonFED")
     timeframe_options = ["15m", "1h", "4h", "1d"]
-    default_timeframe = config.get("app", {}).get("default_timeframe", "1h")
+    default_timeframe = config.get("app", {}).get("default_timeframe", "15m")
     if default_timeframe not in timeframe_options:
-        default_timeframe = "1h"
+        default_timeframe = "15m"
     timeframe = st.sidebar.selectbox("Timeframe", timeframe_options, index=timeframe_options.index(default_timeframe))
-    period = st.sidebar.selectbox("Period", ["5d", "1mo", "3mo", "6mo", "1y", "2y"], index=3)
+    period_options = ["5d", "1mo", "3mo", "6mo", "1y", "2y"]
+    default_period = config.get("app", {}).get("default_period", "5d")
+    if default_period not in period_options:
+        default_period = "5d"
+    period = st.sidebar.selectbox("Period", period_options, index=period_options.index(default_period))
     refresh = st.sidebar.button("Refresh dữ liệu", use_container_width=True)
     if refresh:
         st.cache_data.clear()
@@ -745,16 +1102,8 @@ def sidebar(config: dict) -> tuple[dict, str, str, bool]:
     st.sidebar.divider()
     config.setdefault("telegram", {})
     config["telegram"]["enabled"] = st.sidebar.toggle("Bật Telegram", value=bool(config["telegram"].get("enabled", False)))
-    trade["allow_auto_trade"] = st.sidebar.toggle(
-        "Cho phép auto trade",
-        value=bool(trade.get("allow_auto_trade", False)) and mode_config["allow_auto_trade_toggle"],
-        disabled=not mode_config["allow_auto_trade_toggle"],
-    )
-    if not mode_config["allow_auto_trade_toggle"]:
-        trade["allow_auto_trade"] = False
     settings = load_sonfed_settings()
     settings["telegram_enabled"] = bool(config["telegram"].get("enabled", False))
-    settings["auto_trade_enabled"] = bool(trade.get("allow_auto_trade", False))
     save_sonfed_settings(settings)
 
     with st.sidebar.expander("Cấu hình ticker"):
@@ -765,6 +1114,9 @@ def sidebar(config: dict) -> tuple[dict, str, str, bool]:
             st.sidebar.success("Đã lưu cấu hình ticker.")
 
     render_ai_trade_policy(config, mode_config)
+    settings = load_sonfed_settings()
+    settings["auto_trade_enabled"] = bool(config.get("trade", {}).get("allow_auto_trade", False))
+    save_sonfed_settings(settings)
     return config, timeframe, period, refresh
 
 
@@ -896,48 +1248,34 @@ def main() -> None:
         c2.metric("DXY", metric_value(bundle.get("DXY", pd.DataFrame())))
         c3.metric("US10Y", metric_value(bundle.get("US10Y", pd.DataFrame())))
         c4.metric("Pressure Index", f"{macro['score']}/100")
-        render_trading_mode_panel(config, refresh_info, signal, ai_decision, gold_analysis, macro, mtf, changes)
-        st.plotly_chart(make_gold_chart(gold_df), use_container_width=True, key="overview_gold_chart")
-        st.subheader("Kết luận nhanh")
-        st.write(gold_analysis["summary"])
-        st.subheader("AI Decision Box")
-        d1, d2, d3, d4, d5 = st.columns(5)
-        d1.metric("Quyết định AI", vi_action(signal.get("decision", signal.get("action", "WAIT"))))
-        d2.metric("Độ tin cậy AI", f"{ai_decision['winrate']}%")
-        d3.metric("Chốt lời dự kiến", ai_decision["tp"] if ai_decision["tp"] is not None else "N/A")
-        d4.metric("Cắt lỗ dự kiến", ai_decision["sl"] if ai_decision["sl"] is not None else "N/A")
-        d5.metric("Tỷ lệ lời/lỗ", ai_decision["rr"] if ai_decision["rr"] is not None else "N/A")
-        render_policy_status(policy)
-        render_policy_warning(policy_result)
-        render_quick_decision_explanation(signal, ai_decision, gold_analysis, macro, mtf)
-        render_confidence_guide()
-        render_wait_explanation()
-        st.write(ai_decision["reason"])
-        st.subheader("Phân tích AI")
-        st.write(gold_analysis.get("ai_analysis", "Chưa có phân tích AI."))
-        st.write(bias)
-        st.info(mtf["summary"])
-        st.subheader("Cảnh báo risk")
-        for alert in smart_alerts(gold_analysis, macro, mtf, erisk):
-            st.warning(alert)
-        if ai_decision.get("risk_level") == "Cao":
-            st.error("Biến động/rủi ro đang cao. Tránh tự động vào lệnh với khối lượng lớn.")
-        st.subheader("Auto refresh log")
-        auto_summary = dashboard_summary(refresh_info)
-        a1, a2, a3, a4 = st.columns(4)
-        a1.metric("Trạng thái", auto_summary["enabled"])
-        a2.metric("Chu kỳ", auto_summary["interval"])
-        a3.metric("Tín hiệu hiện tại", auto_summary["current_action"])
-        a4.metric("Tín hiệu trước đó", auto_summary["previous_action"])
-        st.write(f"Lần cập nhật cuối: {auto_summary['last_update']}")
-        st.write(f"Lần cập nhật tiếp theo: {auto_summary['next_update']}")
-        if auto_summary["changes"]:
-            st.write("Thay đổi chính so với lần trước:")
-            for item in auto_summary["changes"]:
-                st.write("- " + item)
-        else:
-            st.info("Chưa có thay đổi quan trọng.")
-        st.caption("Kết luận chi tiết của lần auto refresh được lưu trong data/market_snapshots.json.")
+        mode = normalize_trading_mode(config.get("trade", {}).get("mode", "Hướng dẫn sử dụng"))
+        ui_args = (
+            config,
+            refresh_info,
+            signal,
+            ai_decision,
+            gold_analysis,
+            macro,
+            mtf,
+            changes,
+            policy,
+            policy_result,
+            bundle,
+            gold_df,
+            bias,
+            erisk,
+            risk_fb,
+            trade_feedback,
+            adjustments_payload,
+        )
+        if mode == "Hướng dẫn sử dụng":
+            render_guided_mode_ui(*ui_args)
+        elif mode == "Bán tự động":
+            render_semi_auto_mode_ui(*ui_args)
+        elif mode == "Tự động":
+            render_auto_mode_ui(*ui_args)
+        elif mode == "AI hỗ trợ":
+            render_ai_assistant_mode_ui(*ui_args)
 
     with tabs[1]:
         st.plotly_chart(make_gold_chart(gold_df), use_container_width=True, key="technical_gold_chart")

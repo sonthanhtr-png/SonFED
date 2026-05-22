@@ -1,8 +1,8 @@
 {
   "app": {
     "name": "SonFED",
-    "default_timeframe": "1h",
-    "default_period": "6mo",
+    "default_timeframe": "15m",
+    "default_period": "5d",
     "local_only": true
   },
   "tickers": {
@@ -27,11 +27,12 @@
     "mode": "Tự động",
     "symbol": "XAUUSD",
     "allow_auto_trade": false,
-    "min_confidence": 70,
-    "max_spread_points": 35,
+    "min_confidence": 60,
+    "max_spread_points": 45,
     "max_drawdown_percent": 5,
     "max_open_positions": 3,
-    "signal_max_age_seconds": 300
+    "signal_max_age_seconds": 300,
+    "default_lot": 0.03
   },
   "features": {
     "indicators": {
@@ -46,6 +47,10 @@
       "volume": true
     },
     "strategies": {
+      "Scalp BUY momentum M15": true,
+      "Scalp SELL momentum M15": true,
+      "Scalp breakout M15": true,
+      "Scalp reject M15": true,
       "Hồi kỹ thuật": true,
       "SELL theo xu hướng": true,
       "Breakout": true,
@@ -68,17 +73,17 @@
     "allow_sell": true,
     "max_buy_orders": 3,
     "max_sell_orders": 3,
-    "min_confidence": 70,
-    "min_rr": 1.2,
-    "max_spread": 35,
+    "default_lot": 0.03,
+    "max_buy_volume": 0.09,
+    "max_sell_volume": 0.09,
+    "min_confidence": 60,
+    "min_rr": 1.0,
+    "max_spread": 45,
     "filter_high_volatility": true,
     "filter_important_news": true,
     "allow_sonexec_read_signal": false,
     "allow_auto_execution": false,
     "allow_auto_adjustment": false,
-    "default_lot": 0.03,
-    "max_buy_volume": 0.09,
-    "max_sell_volume": 0.09,
-    "position_management_strategy": "AI thích nghi"
+    "position_management_strategy": "Bám xu hướng"
   }
 }

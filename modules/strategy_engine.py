@@ -26,23 +26,98 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
     market_regime = gold_analysis.get("market_regime", {})
     volatility = gold_analysis.get("volatility", {})
     volatility_score = int(volatility.get("score", 0) or 0)
-    high_vol_penalty = 8 if volatility_score >= 70 else 4 if volatility_score >= 45 else 0
+    scalp_pressure = sum(
+        [
+            bool(volatility.get("atr_expanding")),
+            bool(volatility.get("bb_expanding")),
+            bool(volatility.get("candle_expansion")),
+            bool(volatility.get("volume_spike")),
+            bool(volatility.get("momentum_expanding")),
+        ]
+    )
+    scalp_ready = volatility_score >= 25 or scalp_pressure >= 2
+    high_vol_penalty = 4 if volatility_score >= 85 else 0
+    scalp_bonus = min(12, scalp_pressure * 3 + (4 if volatility_score >= 35 else 0))
     rows = []
 
-    def add(name, condition, probability, entry, tp, sl, alert):
+    def add(name, condition, probability, entry, tp, sl, alert, action="WAIT", scalp=False):
         if enabled.get(name, True):
-            adjusted_probability = max(10, int(probability) - high_vol_penalty)
+            adjusted_probability = int(probability) - high_vol_penalty + (scalp_bonus if scalp else 0)
+            adjusted_probability = max(10, min(88, adjusted_probability))
             rows.append({
                 "strategy": name,
                 "condition": condition,
                 "probability": adjusted_probability,
+                "action": action,
+                "scalp": bool(scalp),
+                "scalp_ready": bool(scalp_ready),
+                "momentum_score": int(scalp_pressure),
                 "entry": entry,
                 "take_profit": round(float(tp), 2),
                 "stop_loss": round(float(sl), 2),
                 "alert": alert,
                 "volatility": volatility.get("level", "Chưa rõ"),
-                "risk_level": "Cao" if volatility_score >= 70 else "Trung bình",
+                "risk_level": "Cao" if volatility_score >= 85 else "Trung bình",
             })
+
+    close_above_ma = bool(last["Close"] > last["MA20"])
+    close_below_ma = bool(last["Close"] < last["MA20"])
+    macd_positive = bool(last["MACD_HIST"] > 0)
+    macd_negative = bool(last["MACD_HIST"] < 0)
+    buy_momentum = close_above_ma and macd_positive and scalp_ready
+    sell_momentum = close_below_ma and macd_negative and scalp_ready
+    bos_up = bool(last.get("BOS_UP", False))
+    bos_down = bool(last.get("BOS_DOWN", False))
+    sweep_up = bool(last.get("LIQUIDITY_SWEEP_UP", False))
+    sweep_down = bool(last.get("LIQUIDITY_SWEEP_DOWN", False))
+
+    breakout_action = "BUY" if bos_up else "SELL" if bos_down else "WAIT"
+    reject_action = "BUY" if sweep_down else "SELL" if sweep_up else "WAIT"
+
+    add(
+        "Scalp BUY momentum M15",
+        "M15 giữ trên MA20, MACD dương, ATR/BB/volume đang mở rộng. Ưu tiên ăn nhịp ngắn, không chờ H4 hoàn hảo.",
+        56 if buy_momentum else 30,
+        f"{price - atr * 0.15:.2f}-{price + atr * 0.10:.2f}",
+        price + atr * 0.8,
+        price - atr * 0.65,
+        "Scalp BUY: vào sớm theo momentum, BE nhanh khi có lời nhỏ.",
+        action="BUY" if buy_momentum else "WAIT",
+        scalp=True,
+    )
+    add(
+        "Scalp SELL momentum M15",
+        "M15 nằm dưới MA20, MACD âm, ATR/BB/volume đang mở rộng. Ưu tiên ăn nhịp ngắn, không chờ H4 hoàn hảo.",
+        56 if sell_momentum else 30,
+        f"{price - atr * 0.10:.2f}-{price + atr * 0.15:.2f}",
+        price - atr * 0.8,
+        price + atr * 0.65,
+        "Scalp SELL: vào sớm theo momentum, BE nhanh khi có lời nhỏ.",
+        action="SELL" if sell_momentum else "WAIT",
+        scalp=True,
+    )
+    add(
+        "Scalp breakout M15",
+        "Giá phá vùng gần nhất kèm volatility expansion. Chấp nhận RR nhỏ nếu lực chạy còn tốt.",
+        58 if breakout_action != "WAIT" and scalp_ready else 30,
+        f"{price - atr * 0.10:.2f}-{price + atr * 0.10:.2f}",
+        price + atr * 0.9 if breakout_action == "BUY" else price - atr * 0.9 if breakout_action == "SELL" else price,
+        price - atr * 0.6 if breakout_action == "BUY" else price + atr * 0.6 if breakout_action == "SELL" else price,
+        "Scalp breakout: ưu tiên phản ứng nhanh, trailing sớm sau khi giá chạy.",
+        action=breakout_action,
+        scalp=True,
+    )
+    add(
+        "Scalp reject M15",
+        "Quét thanh khoản rồi bật/reject rõ. Ưu tiên ăn nhịp hồi ngắn thay vì chờ setup hoàn hảo.",
+        58 if reject_action != "WAIT" else 30,
+        f"{price - atr * 0.15:.2f}-{price + atr * 0.15:.2f}",
+        price + atr * 0.75 if reject_action == "BUY" else price - atr * 0.75 if reject_action == "SELL" else price,
+        price - atr * 0.55 if reject_action == "BUY" else price + atr * 0.55 if reject_action == "SELL" else price,
+        "Scalp reject: vào theo phản ứng giá, thoát nhanh nếu momentum yếu lại.",
+        action=reject_action,
+        scalp=True,
+    )
 
     add(
         "Hồi kỹ thuật",
@@ -52,6 +127,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         price + atr * 1.2,
         price - atr * 0.8,
         "Không BUY nếu H1 vẫn giảm mạnh và chưa có nến xác nhận.",
+        action="BUY",
     )
     add(
         "SELL theo xu hướng",
@@ -61,6 +137,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         support,
         resistance + atr * 0.6,
         "Không nên SELL đuổi sát BB dưới. Chờ hồi hoặc reject.",
+        action="SELL",
     )
     add(
         "Breakout",
@@ -70,6 +147,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         resistance + atr * 1.5,
         resistance - atr * 0.7,
         f"Nếu vàng break {resistance:.2f} và giữ được phía trên, hạn chế SELL đuổi.",
+        action="BUY",
     )
     add(
         "Reject",
@@ -79,6 +157,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         price - atr,
         resistance + atr * 0.5,
         f"Nếu vàng reject tại {resistance:.2f} với volume bán tăng, có thể cân nhắc SELL theo xu hướng chính.",
+        action="SELL",
     )
     add(
         "Sideway",
@@ -88,6 +167,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         (support + resistance) / 2,
         support - atr * 0.5,
         "Ưu tiên biên độ ngắn, không mở lệnh khi giá ở giữa vùng.",
+        action=market_regime.get("bias", "WAIT"),
     )
     add(
         "Né tin",
@@ -97,6 +177,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         price,
         price,
         event_risk.get("message", "Không có tin lớn gần thời điểm hiện tại."),
+        action="WAIT",
     )
     add(
         "Đảo chiều tăng",
@@ -106,6 +187,7 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         price + atr * 1.4,
         price - atr * 0.8,
         "Không tự BUY nếu kỹ thuật chưa xác nhận bằng nến đóng trên MA20.",
+        action="BUY",
     )
     add(
         "Tiếp diễn giảm",
@@ -115,5 +197,6 @@ def build_strategies(gold_analysis: dict, macro: dict, mtf: dict, event_risk: di
         support - atr * 1.3,
         support + atr * 0.7,
         "Chỉ SELL khi breakdown rõ, tránh vào lệnh giữa vùng nhiễu.",
+        action="SELL",
     )
     return sorted(rows, key=lambda x: x["probability"], reverse=True)

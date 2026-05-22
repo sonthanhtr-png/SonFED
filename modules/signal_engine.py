@@ -24,33 +24,53 @@ def create_signal(
     market_regime = gold_analysis.get("market_regime", {})
     volatility = gold_analysis.get("volatility", {})
     volatility_score = int(volatility.get("score", 0) or 0)
+    momentum_score = int(best.get("momentum_score", market_regime.get("scalp_pressure", 0)) or 0)
+    scalp_ready = bool(best.get("scalp_ready") or market_regime.get("scalp_ready"))
+    scalp_strategy = bool(best.get("scalp"))
+    best_action = best.get("action")
+    scalp_accepted = bool(
+        scalp_strategy
+        and best_action in {"BUY", "SELL"}
+        and confidence >= 50
+        and scalp_ready
+        and momentum_score >= 2
+    )
     conflict = False
 
     action = "WAIT"
     if event_risk.get("blocked"):
         action = "WAIT"
-    elif market_regime.get("bias") in {"BUY", "SELL"} and confidence >= 58:
+    elif scalp_accepted:
+        action = str(best_action)
+    elif market_regime.get("bias") in {"BUY", "SELL"} and confidence >= 52:
         action = market_regime.get("bias")
-    elif confidence >= 70 and "SELL" in best.get("strategy", "").upper():
+    elif best_action in {"BUY", "SELL"} and confidence >= 55:
+        action = best_action
+    elif confidence >= 64 and "SELL" in best.get("strategy", "").upper():
         action = "SELL"
-    elif confidence >= 68 and best.get("strategy") in {"Hồi kỹ thuật", "Đảo chiều tăng", "Breakout"}:
+    elif confidence >= 62 and best.get("strategy") in {"Hồi kỹ thuật", "Đảo chiều tăng", "Breakout"}:
         action = "BUY"
 
-    if pressure >= 61 and action == "BUY":
+    if pressure >= 85 and action == "BUY":
         conflict = True
         action = "WAIT"
-    if pressure <= 30 and action == "SELL":
+    if pressure <= 15 and action == "SELL":
         conflict = True
         action = "WAIT"
-    if volatility_score >= 75 and confidence < 72:
+    if volatility_score >= 90 and confidence < 68:
         conflict = True
         action = "WAIT"
 
     reason = best.get("alert", "Chưa đủ điều kiện tạo tín hiệu giao dịch.")
     if conflict:
-        reason = "Không đủ điều kiện auto trade full size. Chờ xác nhận reject/breakdown rõ hơn vì volatility hoặc vĩ mô đang rủi ro."
+        reason = "Risk cực cao hoặc vĩ mô đang ngược mạnh. Không mở scalp mới cho đến khi momentum rõ hơn."
+    elif scalp_accepted:
+        reason = (
+            f"Scalp M15 được kích hoạt: {best.get('strategy', 'momentum')} có confidence {confidence}%, "
+            "volatility/momentum đủ để vào sớm và quản lý lệnh nhanh."
+        )
 
-    risk_level = "Cao" if event_risk.get("blocked") or macro.get("score", 0) >= 81 or volatility_score >= 70 else "Trung bình"
+    risk_level = "Cao" if event_risk.get("blocked") or macro.get("score", 0) >= 90 or volatility_score >= 90 else "Trung bình"
     signal = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "symbol": config.get("trade", {}).get("symbol", "XAUUSD"),
@@ -66,6 +86,9 @@ def create_signal(
         "reason": reason,
         "allow_auto_trade": bool(config.get("trade", {}).get("allow_auto_trade", False) and action in {"BUY", "SELL"} and risk_level != "Cao"),
         "conflict": conflict,
+        "scalp_accepted": scalp_accepted,
+        "scalp_mode": "M15",
+        "momentum_score": momentum_score,
         "mtf_summary": mtf.get("summary", ""),
         "market_regime": market_regime.get("label", gold_analysis.get("regime", "Chưa rõ")),
         "market_regime_score": market_regime.get("score", 0),

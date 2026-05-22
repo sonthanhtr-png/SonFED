@@ -130,16 +130,18 @@ def select_trailing_strategy(position_state: dict, policy: dict | None = None) -
     strategy = (policy or {}).get("position_management_strategy", "AI thích nghi")
     volatility = int(position_state.get("volatility_score", 0))
     if strategy == "Bảo toàn vốn":
-        return {"mode": "atr_trailing", "atr_multiplier": 1.2, "aggressiveness": "chặt"}
+        return {"mode": "atr_trailing", "atr_multiplier": 0.9, "aggressiveness": "chặt"}
     if strategy == "Break-even":
-        return {"mode": "break_even", "atr_multiplier": 1.5, "aggressiveness": "trung bình"}
+        return {"mode": "break_even", "atr_multiplier": 1.0, "aggressiveness": "nhanh"}
     if strategy == "Bám xu hướng":
-        return {"mode": "atr_trailing", "atr_multiplier": 2.0, "aggressiveness": "rộng"}
+        return {"mode": "atr_trailing", "atr_multiplier": 1.4, "aggressiveness": "vừa"}
     if volatility >= 70:
-        return {"mode": "atr_trailing", "atr_multiplier": 1.2, "aggressiveness": "chặt"}
+        return {"mode": "atr_trailing", "atr_multiplier": 0.9, "aggressiveness": "chặt"}
+    if volatility >= 45:
+        return {"mode": "atr_trailing", "atr_multiplier": 1.0, "aggressiveness": "nhanh"}
     if position_state.get("trend_still_valid"):
-        return {"mode": "atr_trailing", "atr_multiplier": 1.8, "aggressiveness": "rộng"}
-    return {"mode": "atr_trailing", "atr_multiplier": 1.5, "aggressiveness": "trung bình"}
+        return {"mode": "atr_trailing", "atr_multiplier": 1.3, "aggressiveness": "vừa"}
+    return {"mode": "atr_trailing", "atr_multiplier": 1.0, "aggressiveness": "nhanh"}
 
 
 def apply_conservative_mode(position_state: dict, gold_df: pd.DataFrame, reason: str) -> dict:
@@ -198,8 +200,34 @@ def generate_position_adjustment(
     previous = previous_signal or side
     strategy = (policy or {}).get("position_management_strategy", "AI thích nghi")
     reason = "Lệnh đang mở được đánh giá theo regime, volatility, momentum và trạng thái tín hiệu mới."
+    scalp_profit_threshold = max(0.8, min(2.0, state["atr"] * 0.18))
+    opposite_signal = (side == "BUY" and current_signal == "SELL") or (side == "SELL" and current_signal == "BUY")
 
-    if previous in {"BUY", "SELL"} and current_signal == "WAIT":
+    if opposite_signal:
+        if state["profit"] > 0 or state["points_profit"] > 0:
+            action = {
+                "adjustment_mode": "scalp_flip",
+                "action": "partial_close",
+                "partial_close_percent": 50,
+                "new_sl_mode": "break_even",
+                "new_sl": calculate_break_even(state),
+                "atr_multiplier": None,
+                "reason": "Tín hiệu M15 đổi chiều. Chốt một phần nhanh, kéo SL về hòa vốn và không cố giữ lệnh vì scalp ưu tiên phản ứng.",
+            }
+        else:
+            action = apply_exit_mode(state, "Tín hiệu M15 đổi chiều khi lệnh chưa có lợi thế. Đóng để tránh biến scalp thành lệnh gồng.")
+    elif state["points_profit"] >= scalp_profit_threshold:
+        trailing = select_trailing_strategy(state, policy)
+        action = {
+            "adjustment_mode": "scalp_profit_lock",
+            "action": "partial_close" if state["points_profit"] >= scalp_profit_threshold * 1.6 else "move_to_break_even",
+            "partial_close_percent": 30 if state["points_profit"] >= scalp_profit_threshold * 1.6 else 0,
+            "new_sl_mode": "break_even" if state["points_profit"] < scalp_profit_threshold * 1.6 else trailing["mode"],
+            "new_sl": calculate_break_even(state) if state["points_profit"] < scalp_profit_threshold * 1.6 else calculate_atr_trailing(state, side, trailing["atr_multiplier"]),
+            "atr_multiplier": None if state["points_profit"] < scalp_profit_threshold * 1.6 else trailing["atr_multiplier"],
+            "reason": "Scalp đang có lợi nhuận nhỏ. Ưu tiên khóa lời sớm, dời BE/trailing nhanh thay vì chờ RR lớn.",
+        }
+    elif previous in {"BUY", "SELL"} and current_signal == "WAIT":
         if state["profit"] > 0 and strategy == "Break-even":
             action = {
                 "adjustment_mode": "break_even",

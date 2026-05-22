@@ -131,6 +131,8 @@ def build_market_state(
         "regime": signal.get("market_regime", gold_analysis.get("regime", "Chưa rõ")),
         "volatility": signal.get("volatility", gold_analysis.get("volatility", {}).get("level", "Chưa rõ")),
         "volatility_score": int(signal.get("volatility_score", gold_analysis.get("volatility", {}).get("score", 0)) or 0),
+        "scalp_accepted": bool(signal.get("scalp_accepted")),
+        "momentum_score": int(signal.get("momentum_score", 0) or 0),
         "spread": risk_feedback.get("spread_points"),
         "news_blocked": bool(event_risk.get("blocked")),
         "buy_orders": _count_positions(positions, "BUY", signal.get("symbol", "XAUUSD")),
@@ -162,19 +164,25 @@ def apply_policy_to_signal(signal: dict[str, Any], policy: AITradePolicy, market
 
     confidence = int(market_state.get("confidence") or 0)
     winrate = int(market_state.get("winrate") or confidence)
-    if max(confidence, winrate) < policy.min_confidence:
+    scalp_accepted = bool(market_state.get("scalp_accepted")) and decision in {"BUY", "SELL"}
+    effective_min_confidence = min(policy.min_confidence, 50) if scalp_accepted else policy.min_confidence
+    if max(confidence, winrate) < effective_min_confidence:
         reasons.append("Độ tin cậy chưa đạt ngưỡng tối thiểu.")
 
     rr = market_state.get("rr")
-    if decision in {"BUY", "SELL"} and (rr is None or float(rr) < policy.min_rr):
+    effective_min_rr = min(policy.min_rr, 0.8) if scalp_accepted else policy.min_rr
+    if decision in {"BUY", "SELL"} and (rr is None or float(rr) < effective_min_rr):
         reasons.append("Tỷ lệ RR chưa đạt yêu cầu.")
 
     spread = market_state.get("spread")
     if spread is not None and float(spread) > policy.max_spread:
         reasons.append("Spread vượt ngưỡng cho phép.")
 
-    if policy.filter_high_volatility and int(market_state.get("volatility_score") or 0) >= 70:
+    volatility_score = int(market_state.get("volatility_score") or 0)
+    if policy.filter_high_volatility and volatility_score >= 70 and not scalp_accepted:
         reasons.append("Biến động thị trường quá mạnh, không phù hợp để vào lệnh tự động.")
+    if policy.filter_high_volatility and volatility_score >= 90:
+        reasons.append("Biến động thị trường cực cao, tạm khóa mở lệnh mới.")
 
     if policy.filter_important_news and market_state.get("news_blocked"):
         reasons.append("Đang gần thời điểm tin tức quan trọng.")
@@ -202,6 +210,8 @@ def apply_policy_to_signal(signal: dict[str, Any], policy: AITradePolicy, market
             "volatility": market_state.get("volatility"),
             "policy": policy.to_dict(),
             "reason": reason,
+            "scalp_accepted": scalp_accepted,
+            "momentum_score": market_state.get("momentum_score", 0),
             "allow_auto_trade": bool(policy.allow_sonexec_read_signal and policy.allow_auto_execution and decision in {"BUY", "SELL"} and not reasons),
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "policy_blocked": bool(reasons),

@@ -203,23 +203,45 @@ def detect_market_regime(df: pd.DataFrame) -> dict:
     else:
         label = "Quiet Range"
 
-    if direction_score >= 25:
+    if direction_score >= 15:
         bias = "BUY"
         bias_text = "BUY nhẹ" if direction_score < 45 else "BUY"
-    elif direction_score <= -25:
+    elif direction_score <= -15:
         bias = "SELL"
         bias_text = "SELL nhẹ" if direction_score > -45 else "SELL"
     else:
         bias = "WAIT"
         bias_text = "WAIT"
 
-    probability = min(78, 50 + int(abs(direction_score) * 0.45) + min(10, int(trend_strength / 10)))
-    if volatility["score"] >= 70:
+    scalp_pressure = sum(
+        [
+            bool(volatility.get("atr_expanding")),
+            bool(volatility.get("bb_expanding")),
+            bool(volatility.get("candle_expansion")),
+            bool(volatility.get("volume_spike")),
+            bool(volatility.get("momentum_expanding")),
+        ]
+    )
+    scalp_ready = scalp_pressure >= 2 or volatility.get("score", 0) >= 25
+    if bias == "WAIT" and scalp_ready:
+        if last["Close"] > last["MA20"] and last["MACD_HIST"] > 0:
+            bias = "BUY"
+            bias_text = "Scalp BUY"
+            direction_score = max(direction_score, 12)
+        elif last["Close"] < last["MA20"] and last["MACD_HIST"] < 0:
+            bias = "SELL"
+            bias_text = "Scalp SELL"
+            direction_score = min(direction_score, -12)
+
+    probability = min(84, 48 + int(abs(direction_score) * 0.5) + min(12, int(trend_strength / 8)))
+    if scalp_ready and bias in {"BUY", "SELL"}:
+        probability = max(probability, 52 + min(12, scalp_pressure * 3))
+    if volatility["score"] >= 85:
         probability = max(45, probability - 8)
     if exhausted:
-        probability = max(45, probability - 6)
+        probability = max(48, probability - 4)
 
-    risk_level = "Cao" if volatility["score"] >= 70 or exhausted else "Trung bình"
+    risk_level = "Cao" if volatility["score"] >= 85 or exhausted else "Trung bình"
     if volatility["score"] < 25 and label == "Quiet Range":
         risk_level = "Thấp"
 
@@ -236,6 +258,8 @@ def detect_market_regime(df: pd.DataFrame) -> dict:
         "trend_score": int(direction_score),
         "structure": structure,
         "momentum": momentum,
+        "scalp_ready": bool(scalp_ready),
+        "scalp_pressure": int(scalp_pressure),
         "ma20_slope": round(ma20_slope, 3),
         "ema50_slope": round(ema50_slope, 3),
         "volatility": volatility,
@@ -259,20 +283,26 @@ def build_decision(gold_analysis: dict, macro: dict, mtf: dict, strategies: list
     support = float(levels.get("support") or price - atr)
     resistance = float(levels.get("resistance") or price + atr)
     action = regime.get("bias", "WAIT")
+    best_action = best.get("action")
+    best_probability = int(best.get("probability", 0) or 0)
+    scalp_best = bool(best.get("scalp"))
+    if best_action in {"BUY", "SELL"} and best_probability >= (50 if scalp_best else 58):
+        action = best_action
 
-    if macro.get("score", 50) >= 65 and action == "BUY":
+    if macro.get("score", 50) >= 85 and action == "BUY":
         action = "WAIT"
-    if macro.get("score", 50) <= 30 and action == "SELL":
+    if macro.get("score", 50) <= 15 and action == "SELL":
         action = "WAIT"
-    if volatility.get("score", 0) >= 75 and action in {"BUY", "SELL"}:
-        action = "WAIT" if best.get("probability", 0) < 72 else action
+    if volatility.get("score", 0) >= 90 and action in {"BUY", "SELL"}:
+        action = "WAIT" if best_probability < 68 else action
 
+    use_best_levels = best_action == action
     if action == "BUY":
-        tp = best.get("take_profit") or price + atr * 1.3
-        sl = best.get("stop_loss") or price - atr * 0.8
+        tp = (best.get("take_profit") if use_best_levels else None) or price + atr * (0.85 if scalp_best else 1.3)
+        sl = (best.get("stop_loss") if use_best_levels else None) or price - atr * (0.65 if scalp_best else 0.8)
     elif action == "SELL":
-        tp = best.get("take_profit") or price - atr * 1.3
-        sl = best.get("stop_loss") or price + atr * 0.8
+        tp = (best.get("take_profit") if use_best_levels else None) or price - atr * (0.85 if scalp_best else 1.3)
+        sl = (best.get("stop_loss") if use_best_levels else None) or price + atr * (0.65 if scalp_best else 0.8)
     else:
         tp = resistance
         sl = support
@@ -280,8 +310,8 @@ def build_decision(gold_analysis: dict, macro: dict, mtf: dict, strategies: list
     risk = abs(price - float(sl)) if sl else 0
     reward = abs(float(tp) - price) if tp else 0
     rr = round(reward / risk, 2) if risk else None
-    winrate = int(min(78, max(42, regime.get("probability", 50))))
-    if volatility.get("score", 0) >= 70:
+    winrate = int(min(86, max(45, best_probability or regime.get("probability", 50))))
+    if volatility.get("score", 0) >= 85:
         winrate = max(42, winrate - 7)
 
     reason_parts = [
@@ -290,13 +320,13 @@ def build_decision(gold_analysis: dict, macro: dict, mtf: dict, strategies: list
         f"{regime.get('structure', '')}. {regime.get('momentum', '')}.",
     ]
     if action == "SELL":
-        reason_parts.append(f"Ưu tiên SELL khi reject vùng {resistance:.2f}.")
+        reason_parts.append("Ưu tiên scalp SELL theo momentum M15, chốt nhịp ngắn và quản lý lệnh nhanh.")
         reason_parts.append(f"Nếu break xác nhận trên {resistance:.2f} thì hủy bias SELL.")
     elif action == "BUY":
-        reason_parts.append(f"Ưu tiên BUY khi giữ được vùng {support:.2f}.")
+        reason_parts.append("Ưu tiên scalp BUY theo momentum M15, chốt nhịp ngắn và quản lý lệnh nhanh.")
         reason_parts.append(f"Nếu breakdown dưới {support:.2f} thì hủy bias BUY.")
     else:
-        reason_parts.append("Chưa đủ lợi thế để mở hướng mới, ưu tiên chờ xác nhận.")
+        reason_parts.append("Chỉ đứng ngoài khi risk quá cao hoặc momentum chưa đủ rõ cho scalp.")
 
     return {
         "action": action,
