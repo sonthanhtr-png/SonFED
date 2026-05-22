@@ -1,0 +1,61 @@
+{
+  "app": {
+    "name": "SonFED",
+    "default_timeframe": "1h",
+    "default_period": "6mo",
+    "local_only": true
+  },
+  "tickers": {
+    "GOLD": "GC=F",
+    "DXY": "DX-Y.NYB",
+    "US10Y": "^TNX",
+    "US02Y": "^IRX",
+    "VIX": "^VIX",
+    "OIL": "CL=F",
+    "NASDAQ": "QQQ",
+    "SP500": "SPY"
+  },
+  "telegram": {
+    "enabled": false,
+    "cycle_minutes": 30
+  },
+  "trade": {
+    "mode": "Manual",
+    "symbol": "XAUUSD",
+    "allow_auto_trade": false,
+    "min_confidence": 70,
+    "max_spread_points": 35,
+    "max_drawdown_percent": 5,
+    "max_open_positions": 3,
+    "signal_max_age_seconds": 300
+  },
+  "features": {
+    "indicators": {
+      "bollinger": true,
+      "ma20": true,
+      "ema50": true,
+      "ema200": true,
+      "rsi": true,
+      "macd": true,
+      "adx": true,
+      "atr": true,
+      "volume": true
+    },
+    "strategies": {
+      "Hồi kỹ thuật": true,
+      "SELL theo xu hướng": true,
+      "Breakout": true,
+      "Reject": true,
+      "Sideway": true,
+      "Né tin": true,
+      "Đảo chiều tăng": true,
+      "Tiếp diễn giảm": true
+    }
+  },
+  "paths": {
+    "shared_dir": "C:\\SonFED\\shared",
+    "fallback_shared_dir": "shared",
+    "database": "data\\sonfed.db",
+    "events": "events.csv"
+  }
+}

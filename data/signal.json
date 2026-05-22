@@ -1,0 +1,14 @@
+{
+  "time": "",
+  "symbol": "XAUUSD",
+  "action": "WAIT",
+  "mode": "Manual",
+  "confidence": 0,
+  "risk_level": "Trung bình",
+  "entry_zone": "Chờ",
+  "take_profit": null,
+  "stop_loss": null,
+  "strategy": "Chờ tín hiệu",
+  "reason": "Chưa có dữ liệu phân tích.",
+  "allow_auto_trade": false
+}
