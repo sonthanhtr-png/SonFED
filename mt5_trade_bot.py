@@ -103,7 +103,8 @@ def can_trade(signal: dict) -> tuple[bool, str]:
         return False, "Không phải tín hiệu BUY/SELL."
     if not signal.get("allow_auto_trade", False):
         return False, "Tín hiệu không cho phép tự động giao dịch."
-    if signal.get("confidence", 0) < cfg.get("min_confidence", 70):
+    min_confidence = min(cfg.get("min_confidence", 70), 50) if signal.get("scalp_accepted") else cfg.get("min_confidence", 70)
+    if signal.get("confidence", 0) < min_confidence:
         return False, "Độ tin cậy thấp."
     if not signal_is_fresh(signal, cfg.get("signal_max_age_seconds", 300)):
         return False, "Tín hiệu quá cũ."

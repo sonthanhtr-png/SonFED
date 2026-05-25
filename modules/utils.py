@@ -29,7 +29,7 @@ def save_json(path: str | Path, payload: Any) -> None:
 
 
 def resolve_shared_dir(config: dict) -> Path:
-    configured = Path(config.get("paths", {}).get("shared_dir", "C:\\SonFED\\shared"))
+    configured = Path(config.get("paths", {}).get("shared_dir", "C:\\SonAI\\shared"))
     try:
         configured.mkdir(parents=True, exist_ok=True)
         return configured

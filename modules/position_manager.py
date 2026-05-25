@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def summarize_position(trade_status: dict, latest_context: dict | None = None) -> dict:
     if not trade_status:
         return {
@@ -11,8 +20,8 @@ def summarize_position(trade_status: dict, latest_context: dict | None = None) -
             "floating_profit": 0,
         }
     position = trade_status.get("position", "NONE")
-    profit = float(trade_status.get("profit", 0) or 0)
-    drawdown = float(trade_status.get("drawdown_percent", 0) or 0)
+    profit = _safe_float(trade_status.get("profit"))
+    drawdown = _safe_float(trade_status.get("drawdown_percent"))
     open_positions = int(trade_status.get("open_positions", 1 if position not in {"NONE", ""} else 0))
     context = latest_context or {}
     pressure = context.get("pressure", 50)

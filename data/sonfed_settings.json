@@ -1,7 +1,7 @@
 {
   "allow_sonexec_signal_read": false,
   "enable_auto_execution": false,
-  "enable_position_management": false,
+  "enable_position_management": true,
   "auto_refresh_enabled": true,
   "refresh_interval_minutes": 5,
   "telegram_enabled": false,
@@ -9,6 +9,6 @@
   "default_lot": 0.03,
   "max_buy_orders": 3,
   "max_sell_orders": 3,
-  "ai_mode": "Chủ động",
+  "ai_mode": "Tấn công",
   "advanced_settings": null
 }

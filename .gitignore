@@ -8,6 +8,8 @@ shared/
 # Database và nhật ký
 data/sonfed.db
 data/signal.json
+data/telegram_state.json
+data/telegram_monitor_state.json
 logs/
 
 # Biến môi trường (chứa token, API key — TUYỆT ĐỐI không commit)

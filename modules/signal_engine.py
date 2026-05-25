@@ -35,6 +35,7 @@ def create_signal(
         and scalp_ready
         and momentum_score >= 2
     )
+    strong_scalp = bool(scalp_accepted and (momentum_score >= 3 or volatility_score >= 45))
     conflict = False
 
     action = "WAIT"
@@ -51,13 +52,13 @@ def create_signal(
     elif confidence >= 62 and best.get("strategy") in {"Hồi kỹ thuật", "Đảo chiều tăng", "Breakout"}:
         action = "BUY"
 
-    if pressure >= 85 and action == "BUY":
+    if pressure >= 85 and action == "BUY" and not strong_scalp:
         conflict = True
         action = "WAIT"
-    if pressure <= 15 and action == "SELL":
+    if pressure <= 15 and action == "SELL" and not strong_scalp:
         conflict = True
         action = "WAIT"
-    if volatility_score >= 90 and confidence < 68:
+    if volatility_score >= 90 and confidence < 68 and not strong_scalp:
         conflict = True
         action = "WAIT"
 
@@ -70,7 +71,8 @@ def create_signal(
             "volatility/momentum đủ để vào sớm và quản lý lệnh nhanh."
         )
 
-    risk_level = "Cao" if event_risk.get("blocked") or macro.get("score", 0) >= 90 or volatility_score >= 90 else "Trung bình"
+    macro_extreme = (pressure >= 90 and action == "BUY") or (pressure <= 10 and action == "SELL")
+    risk_level = "Cao" if event_risk.get("blocked") or macro_extreme or (volatility_score >= 95 and not strong_scalp) else "Trung bình"
     signal = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "symbol": config.get("trade", {}).get("symbol", "XAUUSD"),

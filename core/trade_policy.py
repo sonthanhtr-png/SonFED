@@ -18,10 +18,10 @@ class AITradePolicy:
     default_lot: float = 0.03
     max_buy_volume: float = 0.09
     max_sell_volume: float = 0.09
-    min_confidence: int = 70
-    min_rr: float = 1.2
-    max_spread: int = 35
-    filter_high_volatility: bool = True
+    min_confidence: int = 55
+    min_rr: float = 0.8
+    max_spread: int = 45
+    filter_high_volatility: bool = False
     filter_important_news: bool = True
     allow_sonexec_read_signal: bool = False
     allow_auto_execution: bool = False
@@ -59,10 +59,10 @@ def policy_from_config(config: dict[str, Any]) -> AITradePolicy:
         default_lot=float(raw.get("default_lot", trade.get("default_lot", 0.03))),
         max_buy_volume=float(raw.get("max_buy_volume", 0.09)),
         max_sell_volume=float(raw.get("max_sell_volume", 0.09)),
-        min_confidence=int(raw.get("min_confidence", trade.get("min_confidence", 70))),
-        min_rr=float(raw.get("min_rr", 1.2)),
-        max_spread=int(raw.get("max_spread", trade.get("max_spread_points", 35))),
-        filter_high_volatility=bool(raw.get("filter_high_volatility", True)),
+        min_confidence=int(raw.get("min_confidence", trade.get("min_confidence", 55))),
+        min_rr=float(raw.get("min_rr", 0.8)),
+        max_spread=int(raw.get("max_spread", trade.get("max_spread_points", 45))),
+        filter_high_volatility=bool(raw.get("filter_high_volatility", False)),
         filter_important_news=bool(raw.get("filter_important_news", True)),
         allow_sonexec_read_signal=bool(raw.get("allow_sonexec_read_signal", False)),
         allow_auto_execution=bool(raw.get("allow_auto_execution", trade.get("allow_auto_trade", False))),
@@ -121,7 +121,7 @@ def build_market_state(
 ) -> dict[str, Any]:
     positions = trade_feedback.get("positions", []) if trade_feedback.get("connected") else []
     return {
-        "initial_decision": ai_decision.get("action", signal.get("action", "WAIT")),
+        "initial_decision": signal.get("action", "WAIT") if signal.get("scalp_accepted") else ai_decision.get("action", signal.get("action", "WAIT")),
         "confidence": int(signal.get("confidence", ai_decision.get("winrate", 0)) or 0),
         "winrate": int(ai_decision.get("winrate", signal.get("winrate", 0)) or 0),
         "rr": ai_decision.get("rr"),
@@ -179,9 +179,10 @@ def apply_policy_to_signal(signal: dict[str, Any], policy: AITradePolicy, market
         reasons.append("Spread vượt ngưỡng cho phép.")
 
     volatility_score = int(market_state.get("volatility_score") or 0)
+    momentum_score = int(market_state.get("momentum_score", 0) or 0)
     if policy.filter_high_volatility and volatility_score >= 70 and not scalp_accepted:
         reasons.append("Biến động thị trường quá mạnh, không phù hợp để vào lệnh tự động.")
-    if policy.filter_high_volatility and volatility_score >= 90:
+    if policy.filter_high_volatility and volatility_score >= 90 and not (scalp_accepted and momentum_score >= 3):
         reasons.append("Biến động thị trường cực cao, tạm khóa mở lệnh mới.")
 
     if policy.filter_important_news and market_state.get("news_blocked"):

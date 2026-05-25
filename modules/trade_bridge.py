@@ -8,7 +8,9 @@ from .utils import load_json, save_json
 def read_shared(shared_dir: Path) -> dict:
     return {
         "signal": load_json(shared_dir / "signal.json", {}),
+        "ai_state": load_json(shared_dir / "ai_state.json", {}),
         "trade_status": load_json(shared_dir / "trade_status.json", {}),
+        "performance_status": load_json(shared_dir / "performance_status.json", {}),
         "risk_status": load_json(shared_dir / "risk_status.json", {}),
         "bot_log": load_json(shared_dir / "bot_log.json", []),
     }

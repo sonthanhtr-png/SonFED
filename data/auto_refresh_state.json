@@ -1,30 +1,30 @@
 {
-  "last_update_time": "2026-05-22T20:23:41",
-  "next_update_time": "2026-05-22T20:28:41",
-  "previous_action": "WAIT",
+  "last_update_time": "2026-05-25T07:42:30",
+  "next_update_time": "2026-05-25T07:47:30",
+  "previous_action": "BUY",
   "current_action": "BUY",
-  "last_signal_key": "BUY|Scalp BUY momentum M15|64|4531.05-4533.47|Trung bình",
-  "last_changes": [
-    "Tín hiệu đổi từ WAIT sang BUY."
-  ],
+  "last_signal_key": "BUY|Scalp BUY momentum M15|64|4522.32-4523.79|Trung bình",
+  "last_changes": [],
   "last_snapshot": {
-    "time": "2026-05-22 20:23:41",
-    "gold_price": 4532.5,
-    "dxy": 99.19300079345703,
-    "us10y": 4.546000003814697,
-    "vix": 16.709999084472656,
-    "oil": 95.76000213623047,
-    "nasdaq": 714.4400024414062,
-    "sp500": 742.75,
-    "pressure_index": 0,
+    "time": "2026-05-25 07:42:30",
+    "gold_price": 4523.2001953125,
+    "dxy": 99.00499725341797,
+    "us10y": 4.558000087738037,
+    "vix": 16.700000762939453,
+    "oil": 96.5999984741211,
+    "nasdaq": 717.4299926757812,
+    "sp500": 745.5900268554688,
+    "pressure_index": 10,
     "action": "BUY",
     "strategy": "Scalp BUY momentum M15",
     "confidence": 64,
-    "summary": "Cập nhật lúc: 20:23\n\nGiá vàng hiện tại: 4532.5\nSonFED Pressure Index: 0/100\nTrạng thái thị trường: Weak Trend\nVolatility: Biến động mạnh\nXu hướng M15: Weak Trend\nXu hướng H1: Strong Trend\nDXY: 99.19300079345703\nUS10Y: 4.546000003814697\n\nKết luận:\nGiá hiện tại 4532.50. Trạng thái thị trường: Weak Trend. Volatility: Biến động mạnh (85/100). Bias hiện tại: BUY. Xác suất: 69%. Risk level: Cao.\nVàng đang chịu hai lực kéo ngược nhau.\n\nChiến lược hiện tại:\nBUY - Scalp BUY momentum M15 - winrate 57%.\n\nLưu ý:\nTín hiệu đổi từ WAIT sang BUY.",
+    "summary": "Cập nhật lúc: 07:42\n\nGiá vàng hiện tại: 4523.2001953125\nSonFED Pressure Index: 10/100\nTrạng thái thị trường: Weak Trend\nVolatility: Expansion\nXu hướng M15: Weak Trend\nXu hướng H1: Weak Trend\nDXY: 99.00499725341797\nUS10Y: 4.558000087738037\n\nKết luận:\nGiá hiện tại 4523.20. Trạng thái thị trường: Weak Trend. Volatility: Expansion (35/100). Bias hiện tại: BUY nhẹ. Xác suất: 63%. Risk level: Trung bình.\nVàng đang chịu hai lực kéo ngược nhau.\n\nChiến lược hiện tại:\nBUY - Scalp BUY momentum M15 - winrate 64%.\n\nLưu ý:\nScalp M15 được kích hoạt: Scalp BUY momentum M15 có confidence 64%, volatility/momentum đủ để vào sớm và quản lý lệnh nhanh.",
     "regime": "Weak Trend",
     "m15_trend": "Weak Trend",
-    "h1_trend": "Strong Trend",
-    "support": 4508.2001953125,
-    "resistance": 4539.39990234375
-  }
+    "h1_trend": "Weak Trend",
+    "support": 4488.0,
+    "resistance": 4537.60009765625
+  },
+  "last_telegram_key": "BUY|Scalp reject M15|68|4522.22-4524.18|Trung bình|Giá có dấu hiệu reject hoặc quét vùng quan trọng.",
+  "last_telegram_time": "2026-05-24T16:41:26"
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -46,27 +47,33 @@ from modules.auto_refresh_engine import (
     signal_key,
 )
 from modules.alerts import smart_alerts
+from modules.ai_state_bridge import build_ai_state, write_ai_state
 from modules.data_fetcher import data_status, fetch_market_bundle, fetch_ohlcv
 from modules.database import log_signal, recent_signals
 from modules.events import event_risk, load_events
-from modules.fred_client import fetch_fred_latest, fred_to_frame
+from modules.fred_client import fetch_fred_latest
 from modules.gold_analyzer import analyze_gold
 from modules.indicators import add_indicators
 from modules.market_regime_engine import build_decision
 from modules.macro_engine import gold_bias, pressure_index
 from modules.mtf_engine import analyze_mtf
 from modules.position_manager import ai_trade_summary, summarize_position
+from modules.performance_engine import build_account_report, build_ai_change_alert, build_orders_report
 from modules.signal_engine import create_signal
 from modules.smartmoney_engine import smartmoney_notes
 from modules.strategy_engine import build_strategies
-from modules.telegram_engine import build_alert, send_telegram
+from modules.telegram_engine import build_alert, send_telegram, send_telegram_queued
 from modules.trade_bridge import read_shared
-from modules.utils import ROOT, load_json, resolve_shared_dir, save_json
+from modules.trade_statistics import account_statistics, enrich_positions
+from modules.utils import ROOT, latest_float, load_json, pct_change, resolve_shared_dir, save_json
 from modules.adjustment_engine import write_trade_adjustment
 from modules.position_feedback import normalize_trade_status, position_table_rows
 from modules.risk_feedback import normalize_risk_status
 
 load_dotenv()
+
+SIGNAL_HISTORY_PATH = ROOT / "data" / "signal_history.json"
+TELEGRAM_MONITOR_STATE_PATH = ROOT / "data" / "telegram_monitor_state.json"
 
 TRADING_MODES = ["Hướng dẫn sử dụng", "Bán tự động", "Tự động", "AI hỗ trợ"]
 LEGACY_MODE_MAP = {
@@ -80,17 +87,43 @@ st.set_page_config(page_title="SonFED", page_icon="🟡", layout="wide")
 
 
 def load_config() -> dict:
-    return ensure_auto_refresh_config(load_json("config.json", {}))
+    return ensure_telegram_config(ensure_auto_refresh_config(load_json("config.json", {})))
+
+
+def ensure_telegram_config(config: dict) -> dict:
+    telegram = config.setdefault("telegram", {})
+    telegram.setdefault("enabled", False)
+    telegram.setdefault("cycle_minutes", 30)
+    telegram.setdefault("report_enabled", True)
+    telegram.setdefault("order_alerts_enabled", True)
+    telegram.setdefault("performance_report_enabled", True)
+    telegram.setdefault("drawdown_alerts_enabled", True)
+    telegram.setdefault("ai_bias_alerts_enabled", True)
+    telegram.setdefault("report_interval_minutes", 15)
+    telegram.setdefault("drawdown_alert_percent", 5.0)
+    telegram.setdefault("profit_target_percent", 10.0)
+    telegram.setdefault("cooldown_seconds", 300)
+    telegram.setdefault("base_capital", 200.0)
+    return config
 
 
 def save_config(config: dict) -> None:
     save_json("config.json", config)
 
 
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def metric_value(df: pd.DataFrame) -> str:
     if df.empty:
         return "N/A"
-    return f"{df['Close'].dropna().iloc[-1]:.2f}"
+    return f"{safe_float(df['Close'].dropna().iloc[-1]):.2f}"
 
 
 REGIME_LABELS = {
@@ -192,6 +225,293 @@ def make_gold_chart(df: pd.DataFrame) -> go.Figure:
             fig.add_trace(go.Scatter(x=data.index, y=data[col], name=name, mode="lines"))
     fig.update_layout(height=560, margin=dict(l=10, r=10, t=35, b=10), xaxis_rangeslider_visible=False)
     return fig
+
+
+def _calculate_gold_strength(data: pd.DataFrame, market_regime: dict | None = None) -> dict:
+    if data.empty:
+        return {"buy": 0, "sell": 0, "dominance": "WAIT", "momentum": 0, "trend": 0, "volatility": 0}
+    market_regime = market_regime or {}
+    last = data.iloc[-1]
+    buy_points = 0
+    sell_points = 0
+    close = latest_float(data["Close"])
+    ma20 = latest_float(data.get("MA20", pd.Series(dtype=float)))
+    ema50 = latest_float(data.get("EMA50", pd.Series(dtype=float)))
+    ema200 = latest_float(data.get("EMA200", pd.Series(dtype=float)))
+    macd_hist = latest_float(data.get("MACD_HIST", pd.Series(dtype=float)))
+    macd_delta = latest_float(data.get("MACD_HIST", pd.Series(dtype=float)).diff()) if "MACD_HIST" in data else 0.0
+    rsi = latest_float(data.get("RSI14", pd.Series(dtype=float)), 50.0)
+    adx = latest_float(data.get("ADX14", pd.Series(dtype=float)), 0.0)
+    volatility = int(market_regime.get("volatility", {}).get("score", 0) or 0)
+
+    if close > ma20:
+        buy_points += 18
+    elif close < ma20:
+        sell_points += 18
+    if close > ema50:
+        buy_points += 12
+    elif close < ema50:
+        sell_points += 12
+    if ema50 > ema200:
+        buy_points += 12
+    elif ema50 < ema200:
+        sell_points += 12
+    if macd_hist > 0:
+        buy_points += 18
+    elif macd_hist < 0:
+        sell_points += 18
+    if macd_delta > 0:
+        buy_points += 8
+    elif macd_delta < 0:
+        sell_points += 8
+    if 52 <= rsi <= 70:
+        buy_points += 10
+    elif 30 <= rsi <= 48:
+        sell_points += 10
+    elif rsi > 72:
+        sell_points += 6
+    elif rsi < 28:
+        buy_points += 6
+    if bool(last.get("BOS_UP", False)) or bool(last.get("LIQUIDITY_SWEEP_DOWN", False)):
+        buy_points += 16
+    if bool(last.get("BOS_DOWN", False)) or bool(last.get("LIQUIDITY_SWEEP_UP", False)):
+        sell_points += 16
+    if market_regime.get("bias") == "BUY":
+        buy_points += 12
+    elif market_regime.get("bias") == "SELL":
+        sell_points += 12
+
+    total = max(1, buy_points + sell_points)
+    buy = int(round(buy_points / total * 100))
+    sell = max(0, 100 - buy)
+    dominance = "BUY" if buy >= sell + 12 else "SELL" if sell >= buy + 12 else "WAIT"
+    momentum = min(100, int(abs(macd_hist) / max(abs(latest_float(data.get("ATR14", pd.Series(dtype=float)), 1.0)), 0.01) * 100))
+    trend = min(100, int(abs(buy - sell) + min(adx, 40)))
+    return {"buy": buy, "sell": sell, "dominance": dominance, "momentum": momentum, "trend": trend, "volatility": volatility}
+
+
+def _recent_signal_points(data: pd.DataFrame, max_points: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if data.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    recent = data.tail(80).copy()
+    macd_delta = recent["MACD_HIST"].diff() if "MACD_HIST" in recent else pd.Series(0, index=recent.index)
+    bos_up = recent["BOS_UP"].astype(bool) if "BOS_UP" in recent else pd.Series(False, index=recent.index)
+    bos_down = recent["BOS_DOWN"].astype(bool) if "BOS_DOWN" in recent else pd.Series(False, index=recent.index)
+    sweep_up = recent["LIQUIDITY_SWEEP_UP"].astype(bool) if "LIQUIDITY_SWEEP_UP" in recent else pd.Series(False, index=recent.index)
+    sweep_down = recent["LIQUIDITY_SWEEP_DOWN"].astype(bool) if "LIQUIDITY_SWEEP_DOWN" in recent else pd.Series(False, index=recent.index)
+    volume_spike = recent["VOLUME_SPIKE"].astype(bool) if "VOLUME_SPIKE" in recent else pd.Series(False, index=recent.index)
+    buy_mask = (
+        bos_up
+        | sweep_down
+        | (volume_spike & (recent["Close"] > recent["MA20"]) & (recent["MACD_HIST"] > 0) & (macd_delta > 0))
+    )
+    sell_mask = (
+        bos_down
+        | sweep_up
+        | (volume_spike & (recent["Close"] < recent["MA20"]) & (recent["MACD_HIST"] < 0) & (macd_delta < 0))
+    )
+    return recent.loc[buy_mask].tail(max_points), recent.loc[sell_mask].tail(max_points)
+
+
+def make_ai_gold_chart(df: pd.DataFrame, gold_analysis: dict, signal: dict) -> go.Figure:
+    fig = go.Figure()
+    if df.empty:
+        return fig
+    data = add_indicators(df).tail(180)
+    market_regime = gold_analysis.get("market_regime", {})
+    strength = _calculate_gold_strength(data, market_regime)
+    dominance = strength["dominance"]
+    bg = "#f0fdf4" if dominance == "BUY" else "#fef2f2" if dominance == "SELL" else "#f9fafb"
+    ribbon = "rgba(22, 163, 74, 0.18)" if dominance == "BUY" else "rgba(220, 38, 38, 0.16)" if dominance == "SELL" else "rgba(55, 65, 81, 0.10)"
+
+    fig.add_trace(
+        go.Candlestick(
+            x=data.index,
+            open=data["Open"],
+            high=data["High"],
+            low=data["Low"],
+            close=data["Close"],
+            name="XAUUSD",
+            increasing_line_color="#16a34a",
+            increasing_fillcolor="#22c55e",
+            decreasing_line_color="#dc2626",
+            decreasing_fillcolor="#ef4444",
+            whiskerwidth=0.55,
+        )
+    )
+    indicator_style = {
+        "MA20": ("MA20", "rgba(37, 99, 235, 0.38)", 1.2),
+        "EMA50": ("EMA50", "rgba(124, 58, 237, 0.30)", 1.0),
+        "EMA200": ("EMA200", "rgba(17, 24, 39, 0.24)", 1.0),
+        "BB_UPPER": ("BB trên", "rgba(107, 114, 128, 0.18)", 1.0),
+        "BB_LOWER": ("BB dưới", "rgba(107, 114, 128, 0.18)", 1.0),
+    }
+    for col, (name, color, width) in indicator_style.items():
+        if col in data:
+            fig.add_trace(go.Scatter(x=data.index, y=data[col], name=name, mode="lines", line=dict(color=color, width=width)))
+
+    buy_points, sell_points = _recent_signal_points(data)
+    if not buy_points.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buy_points.index,
+                y=buy_points["Low"] - data["ATR14"].fillna(0).reindex(buy_points.index).fillna(0) * 0.25,
+                mode="markers+text",
+                name="BUY signal",
+                text=["BUY"] * len(buy_points),
+                textposition="bottom center",
+                marker=dict(symbol="triangle-up", size=16, color="#16a34a", line=dict(color="white", width=1)),
+                textfont=dict(color="#166534", size=12),
+            )
+        )
+    if not sell_points.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sell_points.index,
+                y=sell_points["High"] + data["ATR14"].fillna(0).reindex(sell_points.index).fillna(0) * 0.25,
+                mode="markers+text",
+                name="SELL signal",
+                text=["SELL"] * len(sell_points),
+                textposition="top center",
+                marker=dict(symbol="triangle-down", size=16, color="#dc2626", line=dict(color="white", width=1)),
+                textfont=dict(color="#991b1b", size=12),
+            )
+        )
+
+    fig.add_shape(type="rect", xref="paper", yref="paper", x0=0, x1=1, y0=0.935, y1=1, fillcolor=ribbon, line=dict(width=0), layer="below")
+    fig.add_annotation(
+        xref="paper",
+        yref="paper",
+        x=0.012,
+        y=0.968,
+        showarrow=False,
+        text=f"{dominance} ZONE · BUY {strength['buy']}% / SELL {strength['sell']}%",
+        font=dict(size=13, color="#111827"),
+        align="left",
+    )
+    fig.add_annotation(
+        xref="paper",
+        yref="paper",
+        x=0.99,
+        y=0.968,
+        showarrow=False,
+        text=f"Signal: {signal.get('action', 'WAIT')}",
+        font=dict(size=13, color="#15803d" if signal.get("action") == "BUY" else "#b91c1c" if signal.get("action") == "SELL" else "#374151"),
+        align="right",
+    )
+    fig.update_layout(
+        height=640,
+        margin=dict(l=8, r=8, t=42, b=8),
+        xaxis_rangeslider_visible=False,
+        plot_bgcolor=bg,
+        paper_bgcolor="#ffffff",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(107,114,128,0.16)", zeroline=False)
+    return fig
+
+
+def _bar_blocks(value: int, total: int = 10) -> str:
+    filled = max(0, min(total, round(value / 100 * total)))
+    return "█" * filled + "░" * (total - filled)
+
+
+def _status_from_score(value: int, metric: str) -> tuple[str, str]:
+    if value >= 70:
+        return ("Mạnh", "buy" if metric != "risk" else "risk")
+    if value >= 40:
+        return ("Trung bình", "wait")
+    return ("Yếu", "sell" if metric == "momentum" else "wait")
+
+
+def _regime_action(label: str) -> tuple[str, str, str]:
+    raw = str(label or "Chưa rõ")
+    if "Bull" in raw or "BUY" in raw or "tăng" in raw.lower():
+        return "BUY", "🟢", "Xu hướng tăng"
+    if "Bear" in raw or "SELL" in raw or "giảm" in raw.lower():
+        return "SELL", "🔴", "Xu hướng giảm"
+    if "Exhaustion" in raw:
+        return "RISK", "⚠️", "Quá mua/bán"
+    if "Volatile" in raw:
+        return "RISK", "🟠", "Biến động mạnh"
+    if "Quiet" in raw or "Range" in raw:
+        return "WAIT", "⚫", "Sideway"
+    return "WAIT", "⚫", raw
+
+
+def _render_strength_panel(strength: dict) -> None:
+    buy = int(strength.get("buy", 0))
+    sell = int(strength.get("sell", 0))
+    momentum_label, momentum_state = _status_from_score(int(strength.get("momentum", 0)), "momentum")
+    trend_label, trend_state = _status_from_score(int(strength.get("trend", 0)), "trend")
+    volatility_label, volatility_state = _status_from_score(int(strength.get("volatility", 0)), "risk")
+    left, right = st.columns([1.1, 1.0])
+    with left:
+        with st.container(border=True):
+            st.markdown("**Trend Bar**")
+            st.success(f"BUY  {_bar_blocks(buy)}  {buy}%")
+            st.error(f"SELL {_bar_blocks(sell)}  {sell}%")
+    with right:
+        with st.container(border=True):
+            st.markdown("**Momentum Radar**")
+            cols = st.columns(3)
+            cols[0].metric("Momentum", f"{strength.get('momentum', 0)}%", momentum_label)
+            cols[1].metric("Trend strength", f"{strength.get('trend', 0)}%", trend_label)
+            cols[2].metric("Volatility", f"{strength.get('volatility', 0)}%", volatility_label)
+
+
+def _render_mtf_heatmap(mtf: dict) -> None:
+    trends = mtf.get("trends", {})
+    regimes = mtf.get("regimes", {})
+    st.markdown("**Heatmap đa khung**")
+    cols = st.columns(5)
+    for tf in ["M1", "M5", "M15", "H1", "H4"]:
+        label = trends.get(tf) or (regimes.get(tf, {}) or {}).get("label", "Chưa nạp")
+        action, icon, text = _regime_action(label)
+        with cols[["M1", "M5", "M15", "H1", "H4"].index(tf)]:
+            with st.container(border=True):
+                st.caption(tf)
+                _show_action_status(action, f"{icon} {text}")
+
+
+def _render_signal_strip(data: pd.DataFrame, signal: dict) -> None:
+    if data.empty:
+        return
+    last = data.iloc[-1]
+    items = [
+        ("BOS", "BUY" if bool(last.get("BOS_UP", False)) else "SELL" if bool(last.get("BOS_DOWN", False)) else "WAIT"),
+        ("Thanh khoản", "BUY" if bool(last.get("LIQUIDITY_SWEEP_DOWN", False)) else "SELL" if bool(last.get("LIQUIDITY_SWEEP_UP", False)) else "WAIT"),
+        ("Động lượng", signal.get("action", "WAIT") if signal.get("scalp_accepted") else "WAIT"),
+        ("Hành động", signal.get("action", "WAIT")),
+    ]
+    cols = st.columns(4)
+    for idx, (label, action) in enumerate(items):
+        action = str(action or "WAIT").upper()
+        with cols[idx]:
+            _show_action_status(action, f"{_action_text(action)}\n\n{label}: {_bias_label(action)}")
+
+    summary = []
+    liquidity = dict(items).get("Thanh khoản", "WAIT")
+    momentum = dict(items).get("Động lượng", "WAIT")
+    bos = dict(items).get("BOS", "WAIT")
+    action = dict(items).get("Hành động", "WAIT")
+    summary.append(f"Thanh khoản đang nghiêng về {liquidity}.")
+    summary.append(f"Động lượng ngắn hạn {'hỗ trợ ' + momentum if momentum in {'BUY', 'SELL'} else 'chưa xác nhận rõ'}.")
+    summary.append(f"BOS hiện là {bos}.")
+    summary.append("Cần quản lý lệnh chặt." if action in {"BUY", "SELL"} and "WAIT" in {bos, momentum} else f"Hành động hiện tại: {action}.")
+    st.info(" ".join(summary))
+
+
+def render_ai_gold_technical_tab(gold_df: pd.DataFrame, gold_analysis: dict, signal: dict, mtf: dict, signal_history: list[dict]) -> None:
+    data = add_indicators(gold_df) if not gold_df.empty else gold_df
+    strength = _calculate_gold_strength(data, gold_analysis.get("market_regime", {}))
+    _render_strength_panel(strength)
+    st.plotly_chart(make_ai_gold_chart(gold_df, gold_analysis, signal), use_container_width=True, key="technical_ai_gold_chart")
+    _render_signal_strip(data, signal)
+    render_trade_signal_timeline(signal_history, limit=15, compact=True)
+    _render_mtf_heatmap(mtf)
 
 
 def normalize_trading_mode(mode: str) -> str:
@@ -308,7 +628,7 @@ def sync_sonfed_settings_state(settings: dict) -> None:
 def apply_sonfed_settings_to_policy(policy: AITradePolicy, settings: dict) -> AITradePolicy:
     clean = validate_persistent_sonfed_settings(settings)
     advanced = get_effective_advanced_settings(clean)
-    policy.default_lot = float(clean["default_lot"])
+    policy.default_lot = safe_float(clean.get("default_lot"), 0.03)
     policy.allow_buy = True
     policy.allow_sell = True
     policy.max_buy_orders = int(clean["max_buy_orders"])
@@ -316,7 +636,7 @@ def apply_sonfed_settings_to_policy(policy: AITradePolicy, settings: dict) -> AI
     policy.max_buy_volume = round(policy.default_lot * policy.max_buy_orders, 2)
     policy.max_sell_volume = round(policy.default_lot * policy.max_sell_orders, 2)
     policy.min_confidence = int(advanced["min_ai_confidence"])
-    policy.min_rr = float(advanced["min_rr"])
+    policy.min_rr = safe_float(advanced.get("min_rr"), 0.8)
     policy.max_spread = int(advanced["max_spread"])
     policy.filter_high_volatility = bool(advanced["avoid_high_volatility"])
     policy.filter_important_news = bool(advanced["avoid_news"])
@@ -424,7 +744,7 @@ def render_ai_trade_policy(config: dict, mode_config: dict) -> AITradePolicy:
             help="Tính năng này không mở lệnh mới. SonEXEC có thể dời stop loss, khóa lợi nhuận, trailing stop hoặc chốt lời một phần cho lệnh đang mở.",
         )
 
-        lot = float(st.session_state.get("default_lot", 0.03))
+        lot = safe_float(st.session_state.get("default_lot"), 0.03)
         max_sell_orders = int(st.session_state.get("max_sell_orders", 3))
         st.info(f"Nếu mỗi lệnh {lot:.2f} lot và tối đa {max_sell_orders} lệnh SELL, tổng SELL tối đa là {lot * max_sell_orders:.2f} lot.")
 
@@ -515,9 +835,9 @@ def render_policy_warning(policy_result: dict) -> None:
 
 def render_position_management_panel(trade_feedback: dict, adjustments_payload: dict, signal: dict, gold_analysis: dict) -> None:
     positions = trade_feedback.get("positions", [])
-    buy_volume = sum(float(p.get("lot", p.get("volume", 0)) or 0) for p in positions if "BUY" in str(p.get("type", p.get("type_name", ""))).upper())
-    sell_volume = sum(float(p.get("lot", p.get("volume", 0)) or 0) for p in positions if "SELL" in str(p.get("type", p.get("type_name", ""))).upper())
-    floating_profit = sum(float(p.get("profit", 0) or 0) for p in positions)
+    buy_volume = sum(safe_float(p.get("lot", p.get("volume", 0))) for p in positions if "BUY" in str(p.get("type", p.get("type_name", ""))).upper())
+    sell_volume = sum(safe_float(p.get("lot", p.get("volume", 0))) for p in positions if "SELL" in str(p.get("type", p.get("type_name", ""))).upper())
+    floating_profit = sum(safe_float(p.get("profit", 0)) for p in positions)
     trailing_modes = sorted({str(p.get("trailing_mode", "")) for p in positions if p.get("trailing_mode")})
 
     st.subheader("Quản lý lệnh đang mở")
@@ -562,11 +882,769 @@ def render_ai_decision_box(signal: dict, ai_decision: dict) -> None:
     d5.metric("Tỷ lệ lời/lỗ", ai_decision.get("rr") if ai_decision.get("rr") is not None else "N/A")
 
 
+def _fmt_number(value: object, digits: int = 2) -> str:
+    if value in {None, "N/A"}:
+        return "N/A"
+    number = safe_float(value, None)
+    if number is None:
+        return "N/A"
+    return f"{number:.{digits}f}"
+
+
+def _fmt_market_value(df: pd.DataFrame) -> str:
+    if df is None or df.empty or "Close" not in df:
+        return "N/A"
+    return _fmt_number(latest_float(df["Close"]), 2)
+
+
+def _fmt_change(change: float) -> str:
+    change = safe_float(change)
+    if abs(change) < 0.01:
+        return "0.00%"
+    sign = "+" if change > 0 else ""
+    return f"{sign}{change:.2f}%"
+
+
+def _state_class(action: str | None) -> str:
+    action = str(action or "WAIT").upper()
+    if action == "BUY":
+        return "buy"
+    if action == "SELL":
+        return "sell"
+    if action in {"CAO", "HIGH", "RISK"}:
+        return "risk"
+    return "wait"
+
+
+def _bias_label(action: str, short: bool = False) -> str:
+    if action == "BUY":
+        return "BUY" if short else "Lợi BUY vàng"
+    if action == "SELL":
+        return "SELL" if short else "Lợi SELL vàng"
+    if action == "RISK":
+        return "RISK" if short else "Rủi ro cao"
+    return "WAIT" if short else "Trung tính"
+
+
+def _action_text(action: str | None, buy_text: str = "Ưu tiên BUY", sell_text: str = "Ưu tiên SELL", wait_text: str = "WAIT") -> str:
+    action = str(action or "WAIT").upper()
+    if action == "BUY":
+        return f"🟢 {buy_text}"
+    if action == "SELL":
+        return f"🔴 {sell_text}"
+    if action == "RISK":
+        return "🟠 Rủi ro cao"
+    return f"⚫ {wait_text}"
+
+
+def _show_action_status(action: str | None, text: str) -> None:
+    action = str(action or "WAIT").upper()
+    if action == "BUY":
+        st.success(text)
+    elif action == "SELL":
+        st.error(text)
+    elif action == "RISK":
+        st.warning(text)
+    else:
+        st.info(text)
+
+
+RADAR_EXPLANATIONS = {
+    "Gold": {
+        "intro": "Giá vàng hiện tại.",
+        "impact": "Giá trên MA20 và momentum tăng thường ủng hộ BUY.",
+        "up": "Giá tăng hoặc giữ trên MA20 → ưu tiên BUY nếu momentum còn mở rộng.",
+        "down": "Giá giảm hoặc nằm dưới MA20 → ưu tiên SELL nếu momentum yếu đi.",
+    },
+    "DXY": {
+        "intro": "DXY là chỉ số sức mạnh đồng USD.",
+        "impact": "Vàng thường đi ngược USD.",
+        "up": "DXY tăng → bất lợi cho vàng → ưu tiên SELL.",
+        "down": "DXY giảm → hỗ trợ vàng → ưu tiên BUY.",
+    },
+    "US10Y": {
+        "intro": "US10Y là lợi suất trái phiếu Mỹ 10 năm.",
+        "impact": "Lợi suất cao làm chi phí nắm giữ vàng tăng.",
+        "up": "US10Y tăng → bất lợi cho vàng → ưu tiên SELL.",
+        "down": "US10Y giảm → hỗ trợ vàng → ưu tiên BUY.",
+    },
+    "VIX": {
+        "intro": "VIX là chỉ số sợ hãi của thị trường.",
+        "impact": "VIX tăng mạnh có thể hỗ trợ vàng nhờ nhu cầu trú ẩn.",
+        "up": "VIX tăng → risk-off → có thể ưu tiên BUY vàng.",
+        "down": "VIX giảm → nhu cầu trú ẩn yếu hơn → vàng dễ bị SELL.",
+    },
+    "Oil": {
+        "intro": "Oil phản ánh áp lực năng lượng và kỳ vọng lạm phát.",
+        "impact": "Dầu tăng có thể khiến FED hawkish hơn, thường bất lợi cho vàng.",
+        "up": "Oil tăng → lạm phát kỳ vọng tăng → nghiêng SELL vàng.",
+        "down": "Oil giảm → áp lực lạm phát dịu lại → hỗ trợ BUY vàng.",
+    },
+    "Nasdaq": {
+        "intro": "Nasdaq đại diện khẩu vị rủi ro của thị trường.",
+        "impact": "Nasdaq mạnh thường là risk-on, làm nhu cầu trú ẩn giảm.",
+        "up": "Nasdaq tăng → risk-on → vàng dễ yếu, ưu tiên SELL.",
+        "down": "Nasdaq giảm → risk-off → hỗ trợ BUY vàng.",
+    },
+    "CPI": {
+        "intro": "CPI là lạm phát tiêu dùng Mỹ.",
+        "impact": "CPI cao hơn kỳ vọng khiến FED có thể giữ lãi suất cao.",
+        "up": "CPI cao hơn kỳ vọng → bất lợi cho vàng → ưu tiên SELL.",
+        "down": "CPI thấp hơn kỳ vọng → hỗ trợ kỳ vọng giảm lãi suất → ưu tiên BUY.",
+    },
+    "Core CPI": {
+        "intro": "Core CPI là lạm phát lõi, loại bỏ thực phẩm và năng lượng.",
+        "impact": "Core CPI được thị trường dùng để đo áp lực lạm phát bền vững.",
+        "up": "Core CPI cao hơn kỳ vọng → gây áp lực SELL vàng.",
+        "down": "Core CPI thấp hơn kỳ vọng → hỗ trợ BUY vàng.",
+    },
+    "PCE": {
+        "intro": "PCE là chỉ số lạm phát FED rất quan tâm.",
+        "impact": "PCE ảnh hưởng trực tiếp đến kỳ vọng lãi suất.",
+        "up": "PCE cao hơn kỳ vọng → bất lợi cho vàng → ưu tiên SELL.",
+        "down": "PCE thấp hơn kỳ vọng → có lợi cho vàng → ưu tiên BUY.",
+    },
+    "Nonfarm": {
+        "intro": "Nonfarm là bảng lương phi nông nghiệp Mỹ.",
+        "impact": "Việc làm mạnh có thể kéo USD và lợi suất tăng.",
+        "up": "Nonfarm mạnh hơn kỳ vọng → bất lợi cho vàng → ưu tiên SELL.",
+        "down": "Nonfarm yếu hơn kỳ vọng → FED mềm hơn → hỗ trợ BUY vàng.",
+    },
+    "FED Rate": {
+        "intro": "FED Rate là lãi suất điều hành của FED.",
+        "impact": "Lãi suất cao làm vàng kém hấp dẫn hơn tài sản sinh lời.",
+        "up": "Kỳ vọng tăng hoặc giữ lãi suất cao → ưu tiên SELL vàng.",
+        "down": "Kỳ vọng giảm lãi suất → hỗ trợ BUY vàng.",
+    },
+    "Powell Speech": {
+        "intro": "Powell Speech là phát biểu của Chủ tịch FED.",
+        "impact": "Giọng điệu của Powell có thể đổi kỳ vọng lãi suất rất nhanh.",
+        "up": "Hawkish/cứng rắn → bất lợi cho vàng → ưu tiên SELL.",
+        "down": "Dovish/mềm mỏng → hỗ trợ vàng → ưu tiên BUY.",
+    },
+    "GDP": {
+        "intro": "GDP đo sức khỏe tăng trưởng của kinh tế Mỹ.",
+        "impact": "GDP mạnh có thể hỗ trợ USD và lợi suất.",
+        "up": "GDP cao hơn kỳ vọng → thường bất lợi cho vàng.",
+        "down": "GDP thấp hơn kỳ vọng → có thể hỗ trợ BUY vàng.",
+    },
+    "Unemployment": {
+        "intro": "Unemployment phản ánh sức khỏe thị trường lao động Mỹ.",
+        "impact": "Thất nghiệp tăng làm kỳ vọng FED mềm hơn.",
+        "up": "Thất nghiệp cao hơn kỳ vọng → hỗ trợ BUY vàng.",
+        "down": "Thất nghiệp thấp hơn kỳ vọng → có thể gây áp lực SELL vàng.",
+    },
+}
+
+
+def get_radar_explanation(indicator_name: str, value: object, change_pct: object, bias: str) -> str:
+    info = RADAR_EXPLANATIONS.get(indicator_name, {
+        "intro": f"{indicator_name} là chỉ số theo dõi thị trường.",
+        "impact": "Chỉ số này được dùng để đánh giá áp lực BUY/SELL lên vàng.",
+        "up": "Chỉ số tăng có thể thay đổi bias của vàng.",
+        "down": "Chỉ số giảm có thể thay đổi bias của vàng.",
+    })
+    try:
+        change_value = float(change_pct)
+    except (TypeError, ValueError):
+        change_value = 0.0
+
+    macro_names = {"CPI", "Core CPI", "PCE", "Nonfarm", "FED Rate", "Powell Speech", "GDP", "Unemployment"}
+    if abs(change_value) < 0.01:
+        movement = "chưa tạo thiên hướng rõ"
+    elif indicator_name in macro_names:
+        movement = "cao hơn kỳ vọng" if change_value > 0 else "thấp hơn kỳ vọng"
+    else:
+        movement = "đang tăng" if change_value > 0 else "đang giảm"
+
+    bias = str(bias or "WAIT").upper()
+    if bias == "BUY":
+        current = f"Hiện tại {indicator_name} {movement}, đây là yếu tố hỗ trợ BUY vàng."
+    elif bias == "SELL":
+        current = f"Hiện tại {indicator_name} {movement}, đây là áp lực SELL đối với vàng."
+    elif bias == "RISK":
+        current = f"Hiện tại {indicator_name} tạo rủi ro cao, nên giảm khối lượng và quản lý lệnh chặt."
+    else:
+        current = f"Hiện tại {indicator_name} {movement}, chưa tạo thiên hướng rõ."
+
+    value_text = ""
+    if value is not None and str(value).strip() and str(value).strip().upper() != "N/A":
+        value_text = f"Giá trị: {value}."
+    lines = [info["intro"], info["impact"], info["up"], info["down"], value_text, current]
+    return "\n".join(line for line in lines if line)
+
+
+def render_radar_card(name: str, value: object, change: object, bias: str, explanation: str) -> None:
+    bias = str(bias or "WAIT").upper()
+    display_value = value if value is not None and str(value).strip() else "N/A"
+    with st.container(border=True):
+        st.metric(f"{name} ?", display_value, change, help=explanation)
+        _show_action_status(bias, f"{_action_text(bias)}: {_bias_label(bias)}")
+
+
+def _macro_pressure_action(score: object) -> str:
+    try:
+        value = int(float(score))
+    except (TypeError, ValueError):
+        value = 50
+    if value <= 30:
+        return "BUY"
+    if value >= 61:
+        return "SELL"
+    return "WAIT"
+
+
+def _fred_summary(payload: dict | None) -> str:
+    payload = payload or {}
+    if not payload.get("enabled"):
+        return "FRED: Chưa kết nối"
+    data = payload.get("data", {})
+    if not data:
+        return "FRED: Chưa có dữ liệu mới"
+    parts = []
+    for name, item in data.items():
+        value = item.get("value")
+        date = item.get("date") or "N/A"
+        value_text = _fmt_number(value, 2) if value is not None else "N/A"
+        parts.append(f"{name}: {value_text} ({date})")
+    return " · ".join(parts[:4])
+
+
+def _market_bias(key: str, change: float, gold_df: pd.DataFrame) -> tuple[str, str]:
+    threshold = 0.03
+    if key == "GOLD":
+        if gold_df is not None and not gold_df.empty and {"Close", "MA20"}.issubset(gold_df.columns):
+            close = latest_float(gold_df["Close"])
+            ma20 = latest_float(gold_df["MA20"])
+            if close > ma20:
+                return "BUY", "Giá trên MA20"
+            if close < ma20:
+                return "SELL", "Giá dưới MA20"
+        if change > threshold:
+            return "BUY", "Giá tăng"
+        if change < -threshold:
+            return "SELL", "Giá giảm"
+        return "WAIT", "Đi ngang"
+    if key in {"DXY", "US10Y", "OIL"}:
+        if change > threshold:
+            return "SELL", "Tăng gây áp lực"
+        if change < -threshold:
+            return "BUY", "Giảm hỗ trợ vàng"
+        return "WAIT", "Trung tính"
+    if key == "VIX":
+        if change > 0.5:
+            return "BUY", "Risk-off hỗ trợ vàng"
+        if change < -0.5:
+            return "SELL", "Risk-on giảm trú ẩn"
+        return "WAIT", "Trung tính"
+    if key == "NASDAQ":
+        if change > threshold:
+            return "SELL", "Risk-on"
+        if change < -threshold:
+            return "BUY", "Risk-off"
+        return "WAIT", "Trung tính"
+    return "WAIT", "Trung tính"
+
+
+def _build_forex_cards(bundle: dict, gold_df: pd.DataFrame) -> list[dict]:
+    specs = [
+        ("Gold", "GOLD"),
+        ("DXY", "DXY"),
+        ("US10Y", "US10Y"),
+        ("VIX", "VIX"),
+        ("Oil", "OIL"),
+        ("Nasdaq", "NASDAQ"),
+    ]
+    cards = []
+    for label, key in specs:
+        df = gold_df if key == "GOLD" else bundle.get(key, pd.DataFrame())
+        change = pct_change(df.get("Close", pd.Series(dtype=float))) if isinstance(df, pd.DataFrame) else 0.0
+        action, note = _market_bias(key, change, gold_df)
+        cards.append(
+            {
+                "name": label,
+                "value": _fmt_market_value(df),
+                "change": _fmt_change(change),
+                "change_pct": change,
+                "action": action,
+                "note": note,
+            }
+        )
+    return cards
+
+
+def _parse_event_number(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).replace("%", "").replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _event_value(row: pd.Series, names: tuple[str, ...], default: str) -> str:
+    for name in names:
+        if name in row and not pd.isna(row[name]) and str(row[name]).strip():
+            return str(row[name])
+    return default
+
+
+def _find_event(events_df: pd.DataFrame, aliases: tuple[str, ...]) -> pd.Series | None:
+    if events_df is None or events_df.empty or "event" not in events_df:
+        return None
+    pattern = "|".join(aliases)
+    rows = events_df[events_df["event"].astype(str).str.contains(pattern, case=False, na=False, regex=True)].copy()
+    if rows.empty:
+        return None
+    if "time" in rows:
+        rows["time"] = pd.to_datetime(rows["time"], errors="coerce")
+        now = pd.Timestamp.now()
+        upcoming = rows[rows["time"] >= now].sort_values("time")
+        if not upcoming.empty:
+            return upcoming.iloc[0]
+        return rows.sort_values("time", ascending=False).iloc[0]
+    return rows.iloc[0]
+
+
+def _macro_impact(label: str, expected: str, actual: str, row: pd.Series | None, erisk: dict) -> tuple[str, str]:
+    exp_num = _parse_event_number(expected)
+    act_num = _parse_event_number(actual)
+    if exp_num is not None and act_num is not None:
+        hot = act_num > exp_num
+        if label == "Unemployment":
+            action = "BUY" if hot else "SELL"
+        else:
+            action = "SELL" if hot else "BUY"
+        return action, _bias_label(action, short=True)
+    if row is not None and erisk.get("blocked"):
+        blocked_events = " ".join(str(item.get("event", "")) for item in erisk.get("events", []))
+        if str(row.get("event", "")) in blocked_events:
+            return "RISK", "NEWS"
+    return "WAIT", "Chờ"
+
+
+def _build_macro_cards(events_df: pd.DataFrame, erisk: dict) -> list[dict]:
+    specs = [
+        ("CPI", ("CPI",)),
+        ("Core CPI", ("Core CPI",)),
+        ("PCE", ("PCE", "Core PCE")),
+        ("Nonfarm", ("Nonfarm", "NFP")),
+        ("FED Rate", ("FED Rate", "FOMC")),
+        ("Powell Speech", ("Powell Speech", "Powell")),
+        ("GDP", ("GDP",)),
+        ("Unemployment", ("Unemployment", "Jobless")),
+    ]
+    cards = []
+    for label, aliases in specs:
+        row = _find_event(events_df, aliases)
+        expected = _event_value(row, ("expected", "forecast", "consensus", "estimate"), "Chờ dữ liệu") if row is not None else "Chờ dữ liệu"
+        actual = _event_value(row, ("actual", "result", "real"), "Chưa công bố") if row is not None else "Chưa công bố"
+        event_time = ""
+        if row is not None and "time" in row and not pd.isna(row["time"]):
+            event_time = pd.to_datetime(row["time"]).strftime("%d/%m %H:%M")
+        action, impact = _macro_impact(label, expected, actual, row, erisk)
+        exp_num = _parse_event_number(expected)
+        act_num = _parse_event_number(actual)
+        change_pct = (act_num - exp_num) if exp_num is not None and act_num is not None else 0.0
+        cards.append(
+            {
+                "name": label,
+                "expected": expected,
+                "actual": actual,
+                "impact": impact,
+                "action": action,
+                "change_pct": change_pct,
+                "time": event_time or "Không có lịch",
+            }
+        )
+    return cards
+
+
+def _build_market_status(
+    signal: dict,
+    gold_analysis: dict,
+    macro: dict,
+    forex_cards: list[dict],
+    erisk: dict,
+    policy_result: dict,
+    risk_fb: dict,
+    mtf: dict,
+) -> list[tuple[str, str]]:
+    action = str(signal.get("action", "WAIT")).upper()
+    strategy = str(signal.get("strategy", ""))
+    regime = gold_analysis.get("market_regime", {})
+    volatility_score = int(signal.get("volatility_score", gold_analysis.get("volatility", {}).get("score", 0)) or 0)
+    rows: list[tuple[str, str]] = []
+    pressure_score = int(macro.get("score", 50) or 50)
+    pressure_action = _macro_pressure_action(pressure_score)
+    rows.append((f"SonFED Pressure Index {pressure_score}/100: {_bias_label(pressure_action)}", pressure_action))
+    if action in {"BUY", "SELL"}:
+        strength = "mạnh" if signal.get("scalp_accepted") or int(signal.get("momentum_score", 0) or 0) >= 3 else "vừa"
+        rows.append((f"Momentum {action} {strength}", action))
+    else:
+        rows.append(("Momentum chưa đủ rõ để vào mới", "WAIT"))
+
+    for item in forex_cards:
+        if item["name"] in {"DXY", "US10Y", "VIX"}:
+            if item["action"] == "BUY":
+                rows.append((f"{item['name']} hỗ trợ BUY vàng", "BUY"))
+            elif item["action"] == "SELL":
+                rows.append((f"{item['name']} gây áp lực SELL vàng", "SELL"))
+
+    if "breakout" in strategy.lower():
+        rows.append(("Breakout M15 đã xác nhận", action if action in {"BUY", "SELL"} else "WAIT"))
+    else:
+        rows.append(("Chưa breakout xác nhận", "WAIT"))
+
+    if volatility_score >= 70:
+        rows.append((f"Volatility mở rộng mạnh: {volatility_score}/100", "RISK"))
+    elif volatility_score >= 35:
+        rows.append((f"Volatility đủ cho scalp: {volatility_score}/100", action if action in {"BUY", "SELL"} else "WAIT"))
+    else:
+        rows.append((f"Volatility thấp: {volatility_score}/100", "WAIT"))
+
+    if regime.get("momentum"):
+        rows.append((str(regime.get("momentum")), action if action in {"BUY", "SELL"} else "WAIT"))
+    if erisk.get("blocked"):
+        rows.append(("Tin vĩ mô đang gần, ưu tiên giảm rủi ro", "RISK"))
+    if policy_result.get("blocked"):
+        rows.append(("Policy đang khóa entry mới", "RISK"))
+    if risk_fb.get("connected") and not risk_fb.get("allow", True):
+        rows.append(("SonEXEC risk đang khóa giao dịch", "RISK"))
+    if mtf.get("summary"):
+        rows.append((compact_reason(mtf.get("summary", ""), 90), "WAIT"))
+    return rows[:8]
+
+
+def render_ai_trading_radar_overview(
+    config: dict,
+    refresh_info: dict,
+    signal: dict,
+    ai_decision: dict,
+    gold_analysis: dict,
+    macro: dict,
+    bias: str,
+    mtf: dict,
+    bundle: dict,
+    gold_df: pd.DataFrame,
+    events_df: pd.DataFrame,
+    erisk: dict,
+    policy_result: dict,
+    risk_fb: dict,
+    signal_history: list[dict],
+    fred_payload: dict | None = None,
+) -> None:
+    action = str(signal.get("action", ai_decision.get("action", "WAIT")) or "WAIT").upper()
+    confidence = signal.get("confidence", ai_decision.get("winrate", 0))
+    rr = signal.get("rr", ai_decision.get("rr", "N/A"))
+    tp = signal.get("take_profit", ai_decision.get("tp", "N/A"))
+    sl = signal.get("stop_loss", ai_decision.get("sl", "N/A"))
+    risk = signal.get("risk_level", "N/A")
+    mode = normalize_trading_mode(config.get("trade", {}).get("mode", "Hướng dẫn sử dụng"))
+    forex_cards = _build_forex_cards(bundle, gold_df)
+    macro_cards = _build_macro_cards(events_df, erisk)
+    status_rows = _build_market_status(signal, gold_analysis, macro, forex_cards, erisk, policy_result, risk_fb, mtf)
+    refresh_state = "ON" if refresh_info.get("enabled") else "OFF"
+
+    st.subheader("AI Decision Box")
+    with st.container(border=True):
+        _show_action_status(action, f"{_action_text(action, buy_text='BUY', sell_text='SELL', wait_text='WAIT')} · M15 Scalp · {mode} · Refresh {refresh_state}")
+        cols = st.columns(5)
+        cols[0].metric("Confidence", f"{confidence}%")
+        cols[1].metric("RR", rr if rr is not None else "N/A")
+        cols[2].metric("TP", _fmt_number(tp) if tp not in {None, "N/A"} else "N/A")
+        cols[3].metric("SL", _fmt_number(sl) if sl not in {None, "N/A"} else "N/A")
+        cols[4].metric("Risk", risk)
+
+    st.subheader("Radar Forex")
+    forex_cols = st.columns(6)
+    for idx, card in enumerate(forex_cards):
+        with forex_cols[idx]:
+            explanation = get_radar_explanation(card["name"], card["value"], card.get("change_pct", 0.0), card["action"])
+            render_radar_card(card["name"], card["value"], card["change"], card["action"], explanation)
+
+    st.subheader("Radar FED / Vĩ Mô")
+    for start in range(0, len(macro_cards), 4):
+        cols = st.columns(4)
+        for idx, card in enumerate(macro_cards[start:start + 4]):
+            with cols[idx]:
+                explanation = get_radar_explanation(card["name"], card["actual"], card.get("change_pct", 0.0), card["action"])
+                render_radar_card(card["name"], card["actual"], f"Kỳ vọng: {card['expected']}", card["action"], explanation)
+                st.caption(card["time"])
+
+    st.subheader("Áp lực BUY/SELL")
+    try:
+        pressure_score = int(float(macro.get("score", 50) or 50))
+    except (TypeError, ValueError):
+        pressure_score = 50
+    pressure_action = _macro_pressure_action(pressure_score)
+    pressure_cols = st.columns(3)
+    with pressure_cols[0]:
+        with st.container(border=True):
+            st.markdown("**SonFED Pressure Index**")
+            st.metric("Điểm áp lực", f"{pressure_score}/100")
+            _show_action_status(pressure_action, f"{_action_text(pressure_action)}: {macro.get('interpretation', 'Trạng thái vĩ mô trung tính')}")
+    with pressure_cols[1]:
+        with st.container(border=True):
+            st.markdown("**Macro Bias**")
+            st.caption("BUY / SELL / WAIT cho vàng")
+            _show_action_status(pressure_action, f"{_bias_label(pressure_action)}: {compact_reason(bias, 160)}")
+    with pressure_cols[2]:
+        with st.container(border=True):
+            st.markdown("**FRED**")
+            st.caption("Dữ liệu vĩ mô Mỹ mới nhất")
+            st.info(_fred_summary(fred_payload))
+
+    st.subheader("AI Market Status")
+    for start in range(0, len(status_rows), 2):
+        cols = st.columns(2)
+        for idx, (text, row_action) in enumerate(status_rows[start:start + 2]):
+            with cols[idx]:
+                _show_action_status(row_action, text)
+    render_trade_signal_timeline(signal_history, limit=15, compact=True)
+
+
+def _signal_history_key(signal: dict) -> str:
+    return "|".join(
+        str(signal.get(key, ""))
+        for key in ("action", "strategy", "confidence", "entry_zone", "risk_level", "rr")
+    )
+
+
+def load_signal_history(limit: int = 200) -> list[dict]:
+    rows = load_json(SIGNAL_HISTORY_PATH, [])
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)][-limit:]
+
+
+def append_signal_history(signal: dict, limit: int = 200) -> list[dict]:
+    rows = load_signal_history(limit)
+    key = _signal_history_key(signal)
+    if rows and rows[-1].get("key") == key:
+        return rows
+    reason = signal.get("reason") or signal.get("strategy") or ""
+    row = {
+        "timestamp": signal.get("updated_at") or signal.get("time") or pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "signal": str(signal.get("action", "WAIT")).upper(),
+        "confidence": int(signal.get("confidence", 0) or 0),
+        "reason": " ".join(str(reason).split())[:240],
+        "strategy": signal.get("strategy", ""),
+        "rr": signal.get("rr"),
+        "key": key,
+        "replay_id": key,
+        "accuracy": None,
+    }
+    rows.append(row)
+    rows = rows[-limit:]
+    save_json(SIGNAL_HISTORY_PATH, rows)
+    return rows
+
+
+def _signal_icon(action: str | None) -> str:
+    action = str(action or "WAIT").upper()
+    if action == "BUY":
+        return "🟢 BUY"
+    if action == "SELL":
+        return "🔴 SELL"
+    return "⚫ WAIT"
+
+
+def _format_signal_time(value: object) -> str:
+    try:
+        return pd.to_datetime(value).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(value or "N/A")
+
+
+def render_trade_signal_timeline(history: list[dict], limit: int = 15, compact: bool = False) -> None:
+    rows = list(reversed(history[-limit:]))
+    if not rows:
+        st.info("Chưa có lịch sử tín hiệu.")
+        return
+    with st.container(border=True):
+        st.markdown("**Trade Signal Timeline**")
+        st.caption(f"{len(rows)} tín hiệu gần nhất · đã sẵn sàng cho replay, accuracy và performance tracking")
+        for row in rows:
+            action = str(row.get("signal", "WAIT")).upper()
+            reason = compact_reason(row.get("reason", ""), 130 if compact else 180)
+            cols = st.columns([1.45, 1.0, 0.85, 3.0])
+            cols[0].caption(_format_signal_time(row.get("timestamp")))
+            with cols[1]:
+                _show_action_status(action, _signal_icon(action))
+            cols[2].metric("Confidence", f"{row.get('confidence', 0)}%")
+            cols[3].caption(reason or row.get("strategy", "Không có lý do."))
+
+
 def compact_reason(text: str, limit: int = 150) -> str:
     clean = " ".join(str(text or "").split())
     if len(clean) <= limit:
         return clean
     return clean[: limit - 3].rstrip() + "..."
+
+
+def process_sonfed_telegram_monitoring(config: dict, trade_status: dict, performance_status: dict, signal: dict, risk_feedback: dict, changes: list[str]) -> None:
+    telegram = ensure_telegram_config(config).get("telegram", {})
+    if not telegram.get("enabled"):
+        return
+    cooldown = int(telegram.get("cooldown_seconds", 300) or 300)
+    interval_seconds = max(60, int(telegram.get("report_interval_minutes", 15) or 15) * 60)
+    bucket = int(time.time() // interval_seconds)
+
+    if telegram.get("report_enabled", True):
+        message = build_account_report(performance_status or trade_status, config)
+        send_telegram_queued(message, enabled=True, event_key=f"sonfed-account-report|{bucket}", cooldown_seconds=interval_seconds)
+
+    account = trade_status.get("account", {}) if isinstance(trade_status, dict) else {}
+    drawdown = safe_float(account.get("drawdown_percent"))
+    if telegram.get("drawdown_alerts_enabled", True) and drawdown >= safe_float(telegram.get("drawdown_alert_percent"), 5.0):
+        send_telegram_queued(
+            f"⚠️ DRAWDOWN ALERT\n\nDrawdown hiện tại: {drawdown:.2f}%",
+            enabled=True,
+            event_key=f"sonfed-drawdown|{int(drawdown)}",
+            cooldown_seconds=cooldown,
+        )
+
+    if risk_feedback.get("connected") and not risk_feedback.get("allow", True):
+        send_telegram_queued(
+            f"⚠️ RISK ALERT\n\n{risk_feedback.get('reason', 'SonEXEC đang khóa giao dịch.')}",
+            enabled=True,
+            event_key=f"sonfed-risk|{risk_feedback.get('reason', '')}",
+            cooldown_seconds=cooldown,
+        )
+
+    state = load_json(TELEGRAM_MONITOR_STATE_PATH, {})
+    if not isinstance(state, dict):
+        state = {}
+    positions = performance_status.get("positions") or trade_status.get("positions", [])
+    current_tickets = {str(pos.get("ticket")) for pos in positions if pos.get("ticket") is not None}
+    previous_tickets = set(state.get("open_tickets", []))
+    if telegram.get("order_alerts_enabled", True):
+        for ticket in sorted(current_tickets - previous_tickets):
+            pos = next((item for item in positions if str(item.get("ticket")) == ticket), {})
+            send_telegram_queued(
+                "⚠️ NEW OPEN POSITION\n\n" + build_orders_report([pos]),
+                enabled=True,
+                event_key=f"sonfed-ticket-open|{ticket}",
+                cooldown_seconds=cooldown,
+            )
+        for ticket in sorted(previous_tickets - current_tickets):
+            send_telegram_queued(
+                f"⚠️ POSITION CLOSED\n\nLệnh #{ticket} đã không còn mở trên SonEXEC.",
+                enabled=True,
+                event_key=f"sonfed-ticket-closed|{ticket}",
+                cooldown_seconds=cooldown,
+            )
+    state["open_tickets"] = sorted(current_tickets)
+    current_action = str(signal.get("action", "WAIT"))
+    previous_action = str(state.get("last_ai_action", current_action))
+    if telegram.get("ai_bias_alerts_enabled", True) and previous_action != current_action:
+        message = build_ai_change_alert(previous_action, current_action, str(signal.get("reason", "")))
+        send_telegram_queued(message, enabled=True, event_key=f"sonfed-ai-change|{previous_action}|{current_action}|{signal.get('reason', '')}", cooldown_seconds=cooldown)
+    state["last_ai_action"] = current_action
+    state["last_changes"] = changes[-10:]
+    save_json(TELEGRAM_MONITOR_STATE_PATH, state)
+
+
+def _money_text(value: object) -> str:
+    number = safe_float(value)
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:.2f}$"
+
+
+def _pct_text(value: object) -> str:
+    number = safe_float(value)
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:.1f}%"
+
+
+def render_statistics_tab(performance_status: dict, trade_status: dict, signal: dict, risk_fb: dict, config: dict) -> None:
+    telegram = ensure_telegram_config(config).get("telegram", {})
+    account = performance_status.get("account") or trade_status.get("account", {})
+    positions = performance_status.get("positions") or trade_status.get("positions", [])
+    stats = performance_status.get("statistics") or account_statistics(account, positions, safe_float(telegram.get("base_capital"), 200.0))
+    updated_at = performance_status.get("updated_at") or trade_status.get("updated_at") or "Chưa có dữ liệu"
+    position_rows = enrich_positions(positions)
+
+    st.subheader("Thống kê SonFED")
+    st.caption("Nguồn dữ liệu: SonEXEC cập nhật sang shared/performance_status.json, SonFED tổng hợp và gửi Telegram.")
+    if not performance_status:
+        st.warning("Chưa nhận được performance_status.json từ SonEXEC. Đang dùng dữ liệu trade_status hiện có.")
+
+    with st.container(border=True):
+        st.markdown("**Account Command Center**")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Balance", f"{safe_float(stats.get('balance')):,.2f}$")
+        c2.metric("Equity", f"{safe_float(stats.get('equity')):,.2f}$")
+        c3.metric("Floating PnL", _money_text(stats.get("floating_pnl", 0)))
+        c4.metric("Profit trên vốn 200$", _pct_text(stats.get("profit_percent", 0)))
+        c5.metric("Drawdown", _pct_text(stats.get("drawdown_percent", 0)))
+
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown("**Exposure BUY/SELL**")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("BUY Orders", int(safe_float(stats.get("buy_orders"))))
+            c2.metric("SELL Orders", int(safe_float(stats.get("sell_orders"))))
+            c3.metric("BUY Volume", f"{safe_float(stats.get('buy_volume')):.2f}")
+            c4.metric("SELL Volume", f"{safe_float(stats.get('sell_volume')):.2f}")
+    with right:
+        with st.container(border=True):
+            st.markdown("**Bot Health**")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Cập nhật", updated_at)
+            c2.metric("AI Signal", signal.get("action", "WAIT"))
+            c3.metric("Confidence", f"{signal.get('confidence', 0)}%")
+            if risk_fb.get("connected") and not risk_fb.get("allow", True):
+                st.error(f"Risk đang khóa: {risk_fb.get('reason', '')}")
+            else:
+                st.success("Risk hiện tại ổn hoặc chưa có cảnh báo từ SonEXEC.")
+
+    with st.container(border=True):
+        st.markdown("**Performance**")
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Winrate", _pct_text(stats.get("winrate", 0)))
+        c2.metric("RR Avg", f"{safe_float(stats.get('rr_avg')):.2f}")
+        c3.metric("Win", int(safe_float(stats.get("wins"))))
+        c4.metric("Loss", int(safe_float(stats.get("losses"))))
+        c5.metric("Today PnL", _money_text(stats.get("today_pnl", 0)))
+        c6.metric("Week PnL", _money_text(stats.get("week_pnl", 0)))
+
+    best = stats.get("best_strategy", {}) if isinstance(stats.get("best_strategy"), dict) else {}
+    worst = stats.get("worst_strategy", {}) if isinstance(stats.get("worst_strategy"), dict) else {}
+    s1, s2 = st.columns(2)
+    with s1:
+        with st.container(border=True):
+            st.markdown("**Best Strategy**")
+            st.success(best.get("name", "Chưa có dữ liệu"))
+            st.metric("Winrate", _pct_text(best.get("winrate", 0)))
+            st.metric("Profit", _money_text(best.get("profit", 0)))
+    with s2:
+        with st.container(border=True):
+            st.markdown("**Worst Strategy**")
+            st.warning(worst.get("name", "Chưa có dữ liệu"))
+            st.metric("Winrate", _pct_text(worst.get("winrate", 0)))
+            st.metric("Profit", _money_text(worst.get("profit", 0)))
+
+    with st.container(border=True):
+        st.markdown("**Lệnh đang mở**")
+        if position_rows:
+            st.dataframe(pd.DataFrame(position_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Không có lệnh đang mở.")
+
+    with st.container(border=True):
+        st.markdown("**Telegram Monitor**")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Telegram", "ON" if telegram.get("enabled") else "OFF")
+        c2.metric("Report", "ON" if telegram.get("report_enabled") else "OFF")
+        c3.metric("Cooldown", f"{int(telegram.get('cooldown_seconds', 300))}s")
+        c4.metric("Chu kỳ", f"{int(telegram.get('report_interval_minutes', 15))} phút")
+        st.caption("Nếu chưa gửi được Telegram, mở bot và gửi /start một lần để SonFED tự nhận chat_id.")
 
 
 def build_compact_ai_status(signal: dict, ai_decision: dict, gold_analysis: dict, adjustments_payload: dict, policy_result: dict) -> str:
@@ -608,8 +1686,8 @@ def build_critical_alerts(signal: dict, policy_result: dict, erisk: dict, risk_f
 
     spread = risk_fb.get("spread_points")
     max_spread = signal.get("policy", {}).get("max_spread")
-    if spread is not None and max_spread is not None and float(spread) > float(max_spread):
-        alerts.append(f"Spread bất thường: {float(spread):.0f} điểm.")
+    if spread is not None and max_spread is not None and safe_float(spread) > safe_float(max_spread):
+        alerts.append(f"Spread bất thường: {safe_float(spread):.0f} điểm.")
 
     mtf_summary = str(mtf.get("summary", "")).lower()
     if any(token in mtf_summary for token in ("lệch", "ngược", "conflict", "không đồng thuận")):
@@ -647,9 +1725,11 @@ def render_sonexec_status_compact(trade_feedback: dict, risk_fb: dict) -> None:
     account = trade_feedback.get("account", {})
     if account:
         c1, c2, c3 = st.columns(3)
-        c1.metric("Balance", f"{account.get('balance', 0):,.2f}")
-        c2.metric("Equity", f"{account.get('equity', 0):,.2f}")
-        c3.metric("Drawdown", f"{account.get('drawdown_percent', 0):.2f}%")
+        c1.metric("Balance", f"{safe_float(account.get('balance')):,.2f}")
+        c2.metric("Equity", f"{safe_float(account.get('equity')):,.2f}")
+        c3.metric("Drawdown", f"{safe_float(account.get('drawdown_percent')):.2f}%")
+    else:
+        st.info("MT5 chưa kết nối hoặc chưa có dữ liệu tài khoản.")
 
     if risk_fb.get("connected"):
         if risk_fb.get("allow"):
@@ -660,9 +1740,9 @@ def render_sonexec_status_compact(trade_feedback: dict, risk_fb: dict) -> None:
 
 def render_position_management_compact(trade_feedback: dict, adjustments_payload: dict, signal: dict, gold_analysis: dict) -> None:
     positions = trade_feedback.get("positions", [])
-    buy_volume = sum(float(p.get("lot", p.get("volume", 0)) or 0) for p in positions if "BUY" in str(p.get("type", p.get("type_name", ""))).upper())
-    sell_volume = sum(float(p.get("lot", p.get("volume", 0)) or 0) for p in positions if "SELL" in str(p.get("type", p.get("type_name", ""))).upper())
-    floating_profit = sum(float(p.get("profit", 0) or 0) for p in positions)
+    buy_volume = sum(safe_float(p.get("lot", p.get("volume", 0))) for p in positions if "BUY" in str(p.get("type", p.get("type_name", ""))).upper())
+    sell_volume = sum(safe_float(p.get("lot", p.get("volume", 0))) for p in positions if "SELL" in str(p.get("type", p.get("type_name", ""))).upper())
+    floating_profit = sum(safe_float(p.get("profit", 0)) for p in positions)
 
     st.subheader("Trạng thái quản lý lệnh")
     c1, c2, c3, c4 = st.columns(4)
@@ -1158,10 +2238,13 @@ def main() -> None:
     gold_analysis = analyze_gold(gold_df)
     macro = pressure_index(bundle)
     bias = gold_bias(bundle)
+    fred_payload = fetch_fred_latest()
     events_df = load_events(config.get("paths", {}).get("events", "events.csv"))
     erisk = event_risk(events_df)
 
     mtf_frames = {
+        "M1": add_indicators(fetch_ohlcv(config["tickers"]["GOLD"], "1d", "1m")),
+        "M5": add_indicators(fetch_ohlcv(config["tickers"]["GOLD"], "5d", "5m")),
         "M15": add_indicators(fetch_ohlcv(config["tickers"]["GOLD"], "5d", "15m")),
         "H1": add_indicators(fetch_ohlcv(config["tickers"]["GOLD"], "1mo", "1h")),
         "H4": add_indicators(fetch_ohlcv(config["tickers"]["GOLD"], "6mo", "4h")),
@@ -1170,6 +2253,7 @@ def main() -> None:
 
     shared = read_shared(shared_dir)
     trade_status = shared.get("trade_status", {})
+    performance_status = shared.get("performance_status", {})
     trade_feedback = normalize_trade_status(trade_status)
     risk_fb = normalize_risk_status(shared.get("risk_status", {}))
     position = summarize_position(trade_status, {"pressure": macro["score"], "regime": gold_analysis.get("regime", "")})
@@ -1180,6 +2264,9 @@ def main() -> None:
     market_state = build_market_state(ai_decision, signal, gold_analysis, erisk, risk_fb, trade_feedback)
     signal, policy_result = apply_trade_policy(signal, policy, market_state)
     signal["ai_decision"] = ai_decision
+    ai_state = build_ai_state(signal, gold_analysis, macro, mtf, ai_decision, policy_result)
+    write_ai_state(ai_state, shared_dir)
+    signal_history = append_signal_history(signal)
     # Chỉ ghi signal khi nội dung thực sự thay đổi (tránh spam file + DB mỗi lần re-render)
     _signal_key = signal_key(signal)
     previous_signal_key = refresh_info.get("state", {}).get("last_signal_key")
@@ -1211,11 +2298,17 @@ def main() -> None:
     changes = detect_changes(refresh_info.get("state", {}).get("last_snapshot"), base_snapshot, signal, macro, erisk, risk_fb)
     market_summary = build_market_summary(base_snapshot, macro, gold_analysis, mtf, bias, signal, changes)
     base_snapshot["summary"] = market_summary
+    process_sonfed_telegram_monitoring(config, trade_status, performance_status, signal, risk_fb, changes)
     if refresh_info["due"]:
         should_send, telegram_key = should_send_telegram(changes, refresh_info.get("state", {}), signal)
         telegram_sent = False
         if should_send and config.get("telegram", {}).get("enabled", False):
-            ok, _ = send_telegram(market_summary)
+            ok, _ = send_telegram_queued(
+                market_summary,
+                enabled=True,
+                event_key=telegram_key,
+                cooldown_seconds=int(config.get("telegram", {}).get("cooldown_seconds", 300)),
+            )
             telegram_sent = bool(ok)
         refresh_info["state"] = finalize_refresh(
             refresh_info,
@@ -1233,8 +2326,8 @@ def main() -> None:
 
     tabs = st.tabs([
         "Tổng quan",
+        "Thống kê",
         "Phân tích kỹ thuật vàng",
-        "Radar vĩ mô SonFED",
         "Lịch tin quan trọng",
         "Chiến lược SonFED",
         "Tín hiệu giao dịch",
@@ -1243,65 +2336,30 @@ def main() -> None:
     ])
 
     with tabs[0]:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Giá vàng", metric_value(gold_df))
-        c2.metric("DXY", metric_value(bundle.get("DXY", pd.DataFrame())))
-        c3.metric("US10Y", metric_value(bundle.get("US10Y", pd.DataFrame())))
-        c4.metric("Pressure Index", f"{macro['score']}/100")
-        mode = normalize_trading_mode(config.get("trade", {}).get("mode", "Hướng dẫn sử dụng"))
-        ui_args = (
+        render_ai_trading_radar_overview(
             config,
             refresh_info,
             signal,
             ai_decision,
             gold_analysis,
             macro,
+            bias,
             mtf,
-            changes,
-            policy,
-            policy_result,
             bundle,
             gold_df,
-            bias,
+            events_df,
             erisk,
+            policy_result,
             risk_fb,
-            trade_feedback,
-            adjustments_payload,
+            signal_history,
+            fred_payload,
         )
-        if mode == "Hướng dẫn sử dụng":
-            render_guided_mode_ui(*ui_args)
-        elif mode == "Bán tự động":
-            render_semi_auto_mode_ui(*ui_args)
-        elif mode == "Tự động":
-            render_auto_mode_ui(*ui_args)
-        elif mode == "AI hỗ trợ":
-            render_ai_assistant_mode_ui(*ui_args)
 
     with tabs[1]:
-        st.plotly_chart(make_gold_chart(gold_df), use_container_width=True, key="technical_gold_chart")
-        st.subheader("Diễn giải kỹ thuật")
-        for item in gold_analysis.get("items", []):
-            st.write("- " + item)
-        st.subheader("Smart Money")
-        for note in smartmoney_notes(gold_df):
-            st.write("- " + note)
-        st.subheader("Đa khung thời gian")
-        st.json(mtf["trends"])
-        st.write(mtf["summary"])
+        render_statistics_tab(performance_status, trade_status, signal, risk_fb, config)
 
     with tabs[2]:
-        st.metric("SonFED Pressure Index", f"{macro['score']}/100")
-        st.write(macro["interpretation"])
-        st.write(bias)
-        st.write("Chi tiết điểm:")
-        for item in macro["details"]:
-            st.write("- " + item)
-        fred = fetch_fred_latest()
-        st.subheader("FRED")
-        st.write(fred["message"])
-        frame = fred_to_frame(fred)
-        if not frame.empty:
-            st.dataframe(frame, use_container_width=True)
+        render_ai_gold_technical_tab(gold_df, gold_analysis, signal, mtf, signal_history)
 
     with tabs[3]:
         st.subheader("Lịch tin quan trọng")
@@ -1329,9 +2387,11 @@ def main() -> None:
             acc = trade_feedback.get("account", {})
             if acc:
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Balance", f"{acc.get('balance', 0):,.2f}")
-                c2.metric("Equity", f"{acc.get('equity', 0):,.2f}")
-                c3.metric("Drawdown", f"{acc.get('drawdown_percent', 0):.2f}%")
+                c1.metric("Balance", f"{safe_float(acc.get('balance')):,.2f}")
+                c2.metric("Equity", f"{safe_float(acc.get('equity')):,.2f}")
+                c3.metric("Drawdown", f"{safe_float(acc.get('drawdown_percent')):.2f}%")
+            else:
+                st.info("MT5 chưa kết nối hoặc chưa có dữ liệu tài khoản.")
         else:
             st.warning(trade_feedback["message"])
         if risk_fb["connected"]:
@@ -1362,7 +2422,7 @@ def main() -> None:
             st.info("Chưa có lệnh mở hoặc chưa nhận trạng thái từ SonEXEC.")
 
         if st.button("Gửi cảnh báo Telegram ngay", use_container_width=True):
-            price = float(gold_df["Close"].dropna().iloc[-1]) if not gold_df.empty else 0.0
+            price = safe_float(gold_df["Close"].dropna().iloc[-1]) if not gold_df.empty else 0.0
             ok, msg = send_telegram(build_alert(price, gold_analysis, macro, signal, gold_analysis.get("levels", {})))
             st.success(msg) if ok else st.error(msg)
 
@@ -1379,6 +2439,27 @@ def main() -> None:
             for key, value in config["features"]["strategies"].items():
                 config["features"]["strategies"][key] = st.checkbox(key, value=bool(value))
         config["telegram"]["cycle_minutes"] = st.number_input("Chu kỳ gửi Telegram (phút)", 1, 1440, int(config["telegram"].get("cycle_minutes", 30)))
+        st.divider()
+        st.write("Telegram giám sát bot")
+        col1, col2, col3 = st.columns(3)
+        config["telegram"]["report_enabled"] = col1.checkbox("Bật báo cáo Telegram", value=bool(config["telegram"].get("report_enabled", True)))
+        config["telegram"]["order_alerts_enabled"] = col2.checkbox("Bật cảnh báo lệnh", value=bool(config["telegram"].get("order_alerts_enabled", True)))
+        config["telegram"]["performance_report_enabled"] = col3.checkbox("Bật báo cáo hiệu suất", value=bool(config["telegram"].get("performance_report_enabled", True)))
+        col1, col2, col3 = st.columns(3)
+        config["telegram"]["drawdown_alerts_enabled"] = col1.checkbox("Bật báo cáo drawdown", value=bool(config["telegram"].get("drawdown_alerts_enabled", True)))
+        config["telegram"]["ai_bias_alerts_enabled"] = col2.checkbox("Bật cảnh báo AI đổi bias", value=bool(config["telegram"].get("ai_bias_alerts_enabled", True)))
+        interval_options = [15, 30, 60]
+        current_interval = int(config["telegram"].get("report_interval_minutes", 15))
+        config["telegram"]["report_interval_minutes"] = col3.selectbox(
+            "Chu kỳ gửi báo cáo",
+            interval_options,
+            index=interval_options.index(current_interval) if current_interval in interval_options else 0,
+        )
+        col1, col2, col3, col4 = st.columns(4)
+        config["telegram"]["drawdown_alert_percent"] = col1.number_input("Ngưỡng drawdown cảnh báo (%)", min_value=0.1, max_value=100.0, value=safe_float(config["telegram"].get("drawdown_alert_percent"), 5.0), step=0.1)
+        config["telegram"]["profit_target_percent"] = col2.number_input("Profit target trên vốn (%)", min_value=0.0, max_value=500.0, value=safe_float(config["telegram"].get("profit_target_percent"), 10.0), step=0.5)
+        config["telegram"]["cooldown_seconds"] = col3.number_input("Cooldown Telegram (giây)", min_value=0, max_value=86400, value=int(config["telegram"].get("cooldown_seconds", 300)), step=30)
+        config["telegram"]["base_capital"] = col4.number_input("Vốn gốc tính % ($)", min_value=1.0, max_value=100000.0, value=safe_float(config["telegram"].get("base_capital"), 200.0), step=10.0)
         if st.button("Lưu toàn bộ cài đặt"):
             save_config(config)
             st.success("Đã lưu cài đặt.")

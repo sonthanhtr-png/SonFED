@@ -134,13 +134,13 @@ def select_trailing_strategy(position_state: dict, policy: dict | None = None) -
     if strategy == "Break-even":
         return {"mode": "break_even", "atr_multiplier": 1.0, "aggressiveness": "nhanh"}
     if strategy == "Bám xu hướng":
-        return {"mode": "atr_trailing", "atr_multiplier": 1.4, "aggressiveness": "vừa"}
+        return {"mode": "atr_trailing", "atr_multiplier": 1.1, "aggressiveness": "nhanh"}
     if volatility >= 70:
         return {"mode": "atr_trailing", "atr_multiplier": 0.9, "aggressiveness": "chặt"}
     if volatility >= 45:
         return {"mode": "atr_trailing", "atr_multiplier": 1.0, "aggressiveness": "nhanh"}
     if position_state.get("trend_still_valid"):
-        return {"mode": "atr_trailing", "atr_multiplier": 1.3, "aggressiveness": "vừa"}
+        return {"mode": "atr_trailing", "atr_multiplier": 1.1, "aggressiveness": "nhanh"}
     return {"mode": "atr_trailing", "atr_multiplier": 1.0, "aggressiveness": "nhanh"}
 
 
@@ -228,15 +228,15 @@ def generate_position_adjustment(
             "reason": "Scalp đang có lợi nhuận nhỏ. Ưu tiên khóa lời sớm, dời BE/trailing nhanh thay vì chờ RR lớn.",
         }
     elif previous in {"BUY", "SELL"} and current_signal == "WAIT":
-        if state["profit"] > 0 and strategy == "Break-even":
+        if state["profit"] > 0 or state["points_profit"] > 0:
             action = {
-                "adjustment_mode": "break_even",
-                "action": "move_to_break_even",
-                "partial_close_percent": 0,
+                "adjustment_mode": "scalp_wait_lock",
+                "action": "partial_close" if state["points_profit"] >= scalp_profit_threshold * 0.7 else "move_to_break_even",
+                "partial_close_percent": 30 if state["points_profit"] >= scalp_profit_threshold * 0.7 else 0,
                 "new_sl_mode": "break_even",
                 "new_sl": calculate_break_even(state),
                 "atr_multiplier": None,
-                "reason": "AI chuyển sang WAIT nhưng lệnh đang lời, ưu tiên dời SL về hòa vốn và giữ lệnh chạy tiếp.",
+                "reason": "AI chuyển sang WAIT khi lệnh đã có lời. Khóa lời sớm, có thể chốt một phần nhỏ và kéo SL về BE thay vì giữ quá lâu.",
             }
         elif state["trend_still_valid"] and strategy in {"Bám xu hướng", "AI thích nghi"}:
             action = apply_trend_follow_mode(
@@ -244,7 +244,7 @@ def generate_position_adjustment(
                 gold_df,
                 "AI chuyển sang WAIT nhưng H1/H4 vẫn còn xu hướng. Giữ lệnh, bám ATR trailing và không mở thêm vị thế mới.",
             )
-        elif state["volatility_score"] >= 80 or state["confidence"] < 45:
+        elif state["volatility_score"] >= 75 or state["confidence"] < 50:
             action = apply_exit_mode(state, "Regime xấu đi mạnh hoặc confidence collapse. Ưu tiên đóng vị thế để bảo toàn vốn.")
         else:
             action = apply_conservative_mode(

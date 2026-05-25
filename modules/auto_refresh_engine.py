@@ -13,6 +13,15 @@ INTERVAL_OPTIONS = [1, 3, 5, 15, 30]
 DEFAULT_INTERVAL = 5
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def ensure_auto_refresh_config(config: dict) -> dict:
     auto = config.setdefault("auto_refresh", {})
     auto.setdefault("enabled", False)
@@ -184,8 +193,9 @@ def detect_changes(previous: dict | None, snapshot: dict, signal: dict, macro: d
     if "reject" in summary_text or "quét thanh khoản" in summary_text:
         changes.append("Giá có dấu hiệu reject hoặc quét vùng quan trọng.")
 
-    if abs(float(macro.get("dxy_change") or 0)) >= 0.2 and float(macro.get("dxy_change") or 0) > 0:
-        changes.append(f"DXY tăng mạnh: {float(macro.get('dxy_change') or 0):.2f}%.")
+    dxy_change = _safe_float(macro.get("dxy_change"))
+    if abs(dxy_change) >= 0.2 and dxy_change > 0:
+        changes.append(f"DXY tăng mạnh: {dxy_change:.2f}%.")
 
     # US10Y không được macro trả riêng, so sánh trực tiếp snapshot hiện tại với lần trước.
     prev_us10y = previous.get("us10y")

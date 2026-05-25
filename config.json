@@ -17,7 +17,17 @@
   },
   "telegram": {
     "enabled": false,
-    "cycle_minutes": 30
+    "cycle_minutes": 30,
+    "report_enabled": true,
+    "order_alerts_enabled": true,
+    "performance_report_enabled": true,
+    "drawdown_alerts_enabled": true,
+    "ai_bias_alerts_enabled": true,
+    "report_interval_minutes": 15,
+    "drawdown_alert_percent": 5.0,
+    "profit_target_percent": 10.0,
+    "cooldown_seconds": 300,
+    "base_capital": 200.0
   },
   "auto_refresh": {
     "enabled": true,
@@ -27,8 +37,8 @@
     "mode": "Tự động",
     "symbol": "XAUUSD",
     "allow_auto_trade": false,
-    "min_confidence": 60,
-    "max_spread_points": 45,
+    "min_confidence": 50,
+    "max_spread_points": 60,
     "max_drawdown_percent": 5,
     "max_open_positions": 3,
     "signal_max_age_seconds": 300,
@@ -62,7 +72,7 @@
     }
   },
   "paths": {
-    "shared_dir": "C:\\SonFED\\shared",
+    "shared_dir": "C:\\SonAI\\shared",
     "fallback_shared_dir": "shared",
     "database": "data\\sonfed.db",
     "events": "events.csv"
@@ -76,14 +86,14 @@
     "default_lot": 0.03,
     "max_buy_volume": 0.09,
     "max_sell_volume": 0.09,
-    "min_confidence": 60,
-    "min_rr": 1.0,
-    "max_spread": 45,
-    "filter_high_volatility": true,
+    "min_confidence": 50,
+    "min_rr": 0.8,
+    "max_spread": 60,
+    "filter_high_volatility": false,
     "filter_important_news": true,
     "allow_sonexec_read_signal": false,
     "allow_auto_execution": false,
-    "allow_auto_adjustment": false,
-    "position_management_strategy": "Bám xu hướng"
+    "allow_auto_adjustment": true,
+    "position_management_strategy": "AI thích nghi"
   }
 }

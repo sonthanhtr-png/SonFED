@@ -32,20 +32,20 @@ AI_MODE_PRESETS: dict[str, dict[str, Any]] = {
         "position_strategy": "Bảo toàn vốn",
     },
     "Cân bằng": {
-        "min_ai_confidence": 70,
-        "min_rr": 1.2,
+        "min_ai_confidence": 60,
+        "min_rr": 1.0,
         "max_spread": 35,
         "avoid_high_volatility": True,
         "avoid_news": True,
         "position_strategy": "AI tự thích nghi",
     },
     "Chủ động": {
-        "min_ai_confidence": 60,
-        "min_rr": 1.0,
+        "min_ai_confidence": 55,
+        "min_rr": 0.9,
         "max_spread": 45,
         "avoid_high_volatility": False,
         "avoid_news": True,
-        "position_strategy": "Bám xu hướng",
+        "position_strategy": "AI tự thích nghi",
     },
     "Tấn công": {
         "min_ai_confidence": 50,
@@ -73,10 +73,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "default_lot": 0.03,
     "max_buy_orders": 3,
     "max_sell_orders": 3,
-    "ai_mode": "Chủ động",
+    "ai_mode": "Tấn công",
     "allow_sonexec_signal_read": False,
     "enable_auto_execution": False,
-    "enable_position_management": False,
+    "enable_position_management": True,
     "advanced_settings": None,
 }
 

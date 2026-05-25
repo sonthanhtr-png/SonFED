@@ -1,0 +1,141 @@
+{
+  "timestamp": "2026-05-25 08:38:19",
+  "source": "SonFED",
+  "symbol": "XAUUSD",
+  "price": 4523.2001953125,
+  "signal": "WAIT",
+  "confidence": 0,
+  "pressure_index": 10,
+  "macro_bias": "Vàng đang chịu hai lực kéo ngược nhau.",
+  "market_regime": "WEAK_TREND",
+  "volatility": "NORMAL",
+  "momentum": "NORMAL",
+  "execution_mode": "SAFE",
+  "recommended_trailing": "SAFE",
+  "data_status": {
+    "ok": [
+      "GOLD",
+      "DXY",
+      "US10Y",
+      "US02Y",
+      "VIX",
+      "OIL",
+      "NASDAQ",
+      "SP500"
+    ],
+    "missing": [],
+    "time": "2026-05-25 08:38:19"
+  },
+  "macro_details": [
+    "DXY không tăng: +0",
+    "US10Y không tăng: +0",
+    "US02Y không tăng: +0",
+    "VIX không tăng: +0",
+    "OIL không tăng: +0",
+    "Nasdaq giảm: +10"
+  ],
+  "mtf_summary": "Các khung thời gian đang lệch pha, nên chờ xác nhận rõ hơn.",
+  "reason": "Chưa đủ điều kiện tạo tín hiệu giao dịch.",
+  "radar_forex": [
+    {
+      "name": "Gold",
+      "value": 4523.2001953125,
+      "change_pct": 0.0,
+      "bias": "BUY",
+      "explanation": "Giá vàng hiện tại. Trên MA20 và momentum tăng thường ưu tiên BUY; dưới MA20 và momentum giảm thường ưu tiên SELL.\nHiện tại Gold trung tính, đang hỗ trợ BUY vàng."
+    },
+    {
+      "name": "DXY",
+      "value": 98.9749984741211,
+      "change_pct": -0.01,
+      "bias": "WAIT",
+      "explanation": "DXY là sức mạnh USD. DXY tăng thường gây áp lực SELL vàng; DXY giảm thường hỗ trợ BUY vàng.\nHiện tại DXY chưa tạo thiên hướng rõ."
+    },
+    {
+      "name": "US10Y",
+      "value": 4.558000087738037,
+      "change_pct": 0.0,
+      "bias": "WAIT",
+      "explanation": "Lợi suất Mỹ 10 năm. US10Y tăng làm chi phí nắm giữ vàng cao hơn; US10Y giảm thường hỗ trợ vàng.\nHiện tại US10Y chưa tạo thiên hướng rõ."
+    },
+    {
+      "name": "VIX",
+      "value": 16.700000762939453,
+      "change_pct": -0.65,
+      "bias": "WAIT",
+      "explanation": "Chỉ số sợ hãi. VIX tăng mạnh có thể hỗ trợ vàng do nhu cầu trú ẩn; VIX giảm thường trung tính hoặc giảm nhu cầu trú ẩn.\nHiện tại VIX chưa tạo thiên hướng rõ."
+    },
+    {
+      "name": "Oil",
+      "value": 96.5999984741211,
+      "change_pct": 0.0,
+      "bias": "WAIT",
+      "explanation": "Giá dầu ảnh hưởng kỳ vọng lạm phát. Dầu tăng có thể khiến FED hawkish hơn, thường bất lợi cho vàng.\nHiện tại Oil chưa tạo thiên hướng rõ."
+    },
+    {
+      "name": "Nasdaq",
+      "value": 717.4299926757812,
+      "change_pct": -0.03,
+      "bias": "WAIT",
+      "explanation": "Đại diện khẩu vị rủi ro. Nasdaq tăng mạnh là risk-on, vàng có thể yếu; Nasdaq giảm có thể hỗ trợ trú ẩn.\nHiện tại Nasdaq chưa tạo thiên hướng rõ."
+    }
+  ],
+  "radar_fed": [
+    {
+      "name": "CPI",
+      "expected": "-",
+      "actual": "-",
+      "bias": "BUY",
+      "explanation": "Lạm phát tiêu dùng Mỹ. Cao hơn kỳ vọng thường bất lợi cho vàng; thấp hơn kỳ vọng hỗ trợ BUY vàng.\nHiện tại CPI trung tính, đang hỗ trợ BUY vàng."
+    },
+    {
+      "name": "Core CPI",
+      "expected": "-",
+      "actual": "-",
+      "bias": "BUY",
+      "explanation": "Lạm phát lõi. Core CPI cao thường gây áp lực SELL vàng; thấp thường hỗ trợ BUY vàng.\nHiện tại Core CPI trung tính, đang hỗ trợ BUY vàng."
+    },
+    {
+      "name": "PCE",
+      "expected": "-",
+      "actual": "-",
+      "bias": "BUY",
+      "explanation": "Chỉ số lạm phát FED rất quan tâm. PCE cao bất lợi cho vàng; PCE thấp hỗ trợ vàng.\nHiện tại PCE trung tính, đang hỗ trợ BUY vàng."
+    },
+    {
+      "name": "Nonfarm",
+      "expected": "-",
+      "actual": "-",
+      "bias": "BUY",
+      "explanation": "Bảng lương phi nông nghiệp. Số liệu mạnh có thể đẩy USD/yield tăng; số liệu yếu hỗ trợ vàng.\nHiện tại Nonfarm trung tính, đang hỗ trợ BUY vàng."
+    },
+    {
+      "name": "FED Rate",
+      "expected": "-",
+      "actual": "-",
+      "bias": "BUY",
+      "explanation": "Lãi suất FED. Lãi suất cao hoặc kỳ vọng tăng lãi suất thường bất lợi cho vàng.\nHiện tại FED Rate trung tính, đang hỗ trợ BUY vàng."
+    },
+    {
+      "name": "Powell Speech",
+      "expected": "-",
+      "actual": "-",
+      "bias": "WAIT",
+      "explanation": "Phát biểu của Chủ tịch FED. Hawkish bất lợi cho vàng; dovish hỗ trợ vàng.\nHiện tại Powell Speech chưa tạo thiên hướng rõ."
+    },
+    {
+      "name": "GDP",
+      "expected": "-",
+      "actual": "-",
+      "bias": "WAIT",
+      "explanation": "GDP Mỹ mạnh có thể hỗ trợ USD/yield, bất lợi cho vàng; GDP yếu thường hỗ trợ kỳ vọng FED mềm hơn.\nHiện tại GDP chưa tạo thiên hướng rõ."
+    },
+    {
+      "name": "Unemployment",
+      "expected": "-",
+      "actual": "-",
+      "bias": "BUY",
+      "explanation": "Thất nghiệp tăng có thể hỗ trợ kỳ vọng giảm lãi suất; thất nghiệp giảm mạnh thường bất lợi cho vàng.\nHiện tại Unemployment trung tính, đang hỗ trợ BUY vàng."
+    }
+  ]
+}

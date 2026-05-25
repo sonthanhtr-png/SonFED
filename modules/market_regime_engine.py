@@ -286,23 +286,29 @@ def build_decision(gold_analysis: dict, macro: dict, mtf: dict, strategies: list
     best_action = best.get("action")
     best_probability = int(best.get("probability", 0) or 0)
     scalp_best = bool(best.get("scalp"))
+    strong_scalp = bool(
+        scalp_best
+        and best_action in {"BUY", "SELL"}
+        and best_probability >= 50
+        and int(best.get("momentum_score", regime.get("scalp_pressure", 0)) or 0) >= 2
+    )
     if best_action in {"BUY", "SELL"} and best_probability >= (50 if scalp_best else 58):
         action = best_action
 
-    if macro.get("score", 50) >= 85 and action == "BUY":
+    if macro.get("score", 50) >= 85 and action == "BUY" and not strong_scalp:
         action = "WAIT"
-    if macro.get("score", 50) <= 15 and action == "SELL":
+    if macro.get("score", 50) <= 15 and action == "SELL" and not strong_scalp:
         action = "WAIT"
-    if volatility.get("score", 0) >= 90 and action in {"BUY", "SELL"}:
+    if volatility.get("score", 0) >= 90 and action in {"BUY", "SELL"} and not strong_scalp:
         action = "WAIT" if best_probability < 68 else action
 
     use_best_levels = best_action == action
     if action == "BUY":
-        tp = (best.get("take_profit") if use_best_levels else None) or price + atr * (0.85 if scalp_best else 1.3)
-        sl = (best.get("stop_loss") if use_best_levels else None) or price - atr * (0.65 if scalp_best else 0.8)
+        tp = (best.get("take_profit") if use_best_levels else None) or price + atr * (0.75 if scalp_best else 1.3)
+        sl = (best.get("stop_loss") if use_best_levels else None) or price - atr * (0.70 if scalp_best else 0.8)
     elif action == "SELL":
-        tp = (best.get("take_profit") if use_best_levels else None) or price - atr * (0.85 if scalp_best else 1.3)
-        sl = (best.get("stop_loss") if use_best_levels else None) or price + atr * (0.65 if scalp_best else 0.8)
+        tp = (best.get("take_profit") if use_best_levels else None) or price - atr * (0.75 if scalp_best else 1.3)
+        sl = (best.get("stop_loss") if use_best_levels else None) or price + atr * (0.70 if scalp_best else 0.8)
     else:
         tp = resistance
         sl = support

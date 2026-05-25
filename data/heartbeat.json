@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-05-25 08:38:19",
+  "source": "SonFED",
+  "status": "RUNNING",
+  "signal": "WAIT",
+  "confidence": 0,
+  "market_regime": "WEAK_TREND",
+  "execution_mode": "SAFE"
+}
